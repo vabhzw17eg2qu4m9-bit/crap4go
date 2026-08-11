@@ -36,6 +36,9 @@ jobs:
       - name: Refresh CRAP + coverage badges
         # Self-hosting: regenerate the README badges from this run's max CRAP
         # and overall coverage, then commit them back so the badges stay live.
+        # Push events only: pull_request runs check out a detached HEAD, so a
+        # git push here would fail; badges are a main-branch artifact anyway.
+        if: github.event_name == 'push'
         run: |
           set -euo pipefail
           # High threshold ⇒ tool always exits 0 while still printing the real max CRAP.
@@ -55,6 +58,7 @@ jobs:
           bash scripts/badge.sh CRAP "$max_crap2" "$crap_color" badges/crap.svg
           bash scripts/badge.sh coverage "$cov1%" "$cov_color" badges/coverage.svg
       - name: Commit refreshed badges
+        if: github.event_name == 'push'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
