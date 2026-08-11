@@ -1,0 +1,21 @@
+name: release-please
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  release-please:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: googleapis/release-please-action@v4
+        with:
+          release-type: go
+          # Go has no version field in go.mod, so release-please uses
+          # .release-please-manifest.json as the source of truth. It bumps
+          # that file, updates CHANGELOG.md, opens a release PR, and on
+          # merge creates the git tag + GitHub Release FROM CI.
