@@ -1,7 +1,7 @@
 # crap4go
 
 [![Quality](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/actions/workflows/quality.yml/badge.svg)](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/actions/workflows/quality.yml)
-[![version](https://img.shields.io/github/v/tag/vabhzw17eg2qu4m9-bit/crap4go?label=version)](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/releases)
+[![version](https://img.shields.io/github/v/release/vabhzw17eg2qu4m9-bit/crap4go?label=version)](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/releases)
 ![CRAP](badges/crap.svg)
 ![coverage](badges/coverage.svg)
 
