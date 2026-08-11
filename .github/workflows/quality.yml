@@ -38,7 +38,10 @@ jobs:
         # and overall coverage, then commit them back so the badges stay live.
         # Push events only: pull_request runs check out a detached HEAD, so a
         # git push here would fail; badges are a main-branch artifact anyway.
-        if: github.event_name == 'push'
+        # Skip on the bot's own push so the badge commit doesn't loop; the
+        # badge commit message intentionally omits any skip token so squash
+        # merges aren't poisoned and the main run fires cleanly.
+        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
         run: |
           set -euo pipefail
           # High threshold ⇒ tool always exits 0 while still printing the real max CRAP.
@@ -58,7 +61,7 @@ jobs:
           bash scripts/badge.sh CRAP "$max_crap2" "$crap_color" badges/crap.svg
           bash scripts/badge.sh coverage "$cov1%" "$cov_color" badges/coverage.svg
       - name: Commit refreshed badges
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -66,6 +69,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "badges unchanged"
           else
-            git commit -m "chore: refresh CRAP/coverage badges [skip ci]"
+            git commit -m "chore: refresh CRAP/coverage badges"
             git push
           fi
