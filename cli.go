@@ -125,7 +125,13 @@ func runWithRoot(args []string, root string, stdout, stderr io.Writer) int {
 
 	covPath := resolveCoveragePath(opts.coveragePath, root)
 	warnIfCoverageMissing(covPath, opts.coveragePath, stderr)
+	return emitReport(files, covPath, opts, stdout, stderr)
+}
 
+// emitReport analyzes files, prints the sorted report, and enforces the CRAP
+// threshold. It returns the process exit code (1 on analyze error, 2 on
+// threshold exceeded, 0 otherwise).
+func emitReport(files []string, covPath string, opts options, stdout, stderr io.Writer) int {
 	metrics, err := Analyze(files, covPath)
 	if err != nil {
 		fmt.Fprintln(stderr, err)

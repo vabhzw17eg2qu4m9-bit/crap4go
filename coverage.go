@@ -52,10 +52,7 @@ func ParseCoverProfileReader(r io.Reader) (map[string]*FileCoverage, error) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		line := scanner.Text()
-		if line == "" || line[0] == '#' {
-			continue
-		}
-		if len(line) >= 5 && line[:5] == "mode:" {
+		if isMetaLine(line) {
 			continue
 		}
 		m := coverLineRe.FindStringSubmatch(line)
@@ -87,6 +84,15 @@ func ParseCoverProfileReader(r io.Reader) (map[string]*FileCoverage, error) {
 		return nil, err
 	}
 	return profile, nil
+}
+
+// isMetaLine reports whether line is blank, a comment, or the "mode:" header —
+// the non-data lines skipped by ParseCoverProfileReader.
+func isMetaLine(line string) bool {
+	if line == "" || line[0] == '#' {
+		return true
+	}
+	return len(line) >= 5 && line[:5] == "mode:"
 }
 
 // CoverageForMethod aggregates the blocks of fc whose [StartLine, EndLine]
