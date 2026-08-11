@@ -81,34 +81,37 @@ func parseStatusLine(line string) string {
 func ExpandPaths(args []string, root string) ([]string, error) {
 	seen := make(map[string]bool)
 	var files []string
-	add := func(p string) {
-		if p != "" && !seen[p] {
-			seen[p] = true
-			files = append(files, p)
-		}
-	}
 	for _, arg := range args {
-		path := arg
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(root, arg)
-		}
-		path = filepath.Clean(path)
-		info, err := os.Stat(path)
+		walked, err := expandOnePath(arg, root)
 		if err != nil {
 			return nil, err
 		}
-		if info.IsDir() {
-			walked, err := FindSourceFiles(path)
-			if err != nil {
-				return nil, err
+		for _, f := range walked {
+			if !seen[f] {
+				seen[f] = true
+				files = append(files, f)
 			}
-			for _, f := range walked {
-				add(f)
-			}
-		} else {
-			add(path)
 		}
 	}
 	sort.Strings(files)
 	return files, nil
+}
+
+// expandOnePath resolves a single CLI arg against root into the list of Go
+// source paths it denotes: a directory is walked via FindSourceFiles, a file is
+// returned verbatim. Relative args are joined under root.
+func expandOnePath(arg, root string) ([]string, error) {
+	path := arg
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(root, arg)
+	}
+	path = filepath.Clean(path)
+	info, err := os.Stat(path)
+	if err != nil {
+		return nil, err
+	}
+	if info.IsDir() {
+		return FindSourceFiles(path)
+	}
+	return []string{path}, nil
 }

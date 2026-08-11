@@ -25,23 +25,23 @@ func ComplexityOf(body *ast.BlockStmt) int {
 	}
 	cc := 1
 	ast.Inspect(body, func(n ast.Node) bool {
-		switch n := n.(type) {
-		case *ast.IfStmt:
-			cc++
-		case *ast.ForStmt:
-			cc++
-		case *ast.RangeStmt:
-			cc++
-		case *ast.CaseClause:
-			cc++
-		case *ast.CommClause:
-			cc++
-		case *ast.BinaryExpr:
-			if n.Op == token.LAND || n.Op == token.LOR {
-				cc++
-			}
-		}
+		cc += complexityDelta(n)
 		return true
 	})
 	return cc
+}
+
+// complexityDelta returns the cyclomatic-complexity contribution of a single
+// AST node: 1 for a decision/branch node (if/for/range/case/select-case) or a
+// short-circuiting && / || operator, 0 otherwise.
+func complexityDelta(n ast.Node) int {
+	switch n := n.(type) {
+	case *ast.IfStmt, *ast.ForStmt, *ast.RangeStmt, *ast.CaseClause, *ast.CommClause:
+		return 1
+	case *ast.BinaryExpr:
+		if n.Op == token.LAND || n.Op == token.LOR {
+			return 1
+		}
+	}
+	return 0
 }
