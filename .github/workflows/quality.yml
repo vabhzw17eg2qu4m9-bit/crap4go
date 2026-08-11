@@ -42,7 +42,8 @@ jobs:
         # and overall coverage, then commit them back so the badges stay live.
         run: |
           set -euo pipefail
-          max_crap=$(./crap4go --coverage coverage.out | awk '/^Max CRAP:/ {print $3}')
+          # High threshold ⇒ tool always exits 0 while still printing the real max CRAP.
+          max_crap=$(./crap4go --coverage coverage.out --threshold 9999 | awk '/^Max CRAP:/ {print $3}')
           # Value formatted to 2 decimals for the CRAP badge.
           max_crap2=$(awk -v m="$max_crap" 'BEGIN { printf "%.2f", m }')
           cov=$(awk '/coverage: / { for (i=1;i<=NF;i++) if ($i=="coverage:") { gsub("%","",$(i+1)); print $(i+1); exit } }' /tmp/gotest.log)
