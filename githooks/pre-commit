@@ -1,0 +1,32 @@
+#!/usr/bin/env bash
+# githooks/pre-commit — run crap4go on staged .go files (see badges-hooks-spec §5).
+# Activate once per clone:  git config core.hooksPath githooks
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+
+files=$(git diff --cached --name-only --diff-filter=ACM -- '*.go')
+if [ -z "$files" ]; then
+  exit 0
+fi
+
+if ! command -v go >/dev/null 2>&1; then
+  echo "warning: go toolchain not found; skipping crap4go pre-commit check" >&2
+  exit 0
+fi
+
+if [ ! -x ./crap4go ]; then
+  # Cache the binary so repeated commits don't rebuild; .gitignore excludes it.
+  go build -o crap4go .
+fi
+
+# shellcheck disable=SC2086  # intentional word-splitting on file list
+./crap4go --threshold 8.0 --coverage coverage.out $files
+status=$?
+
+if [ "$status" -eq 2 ]; then
+  echo "❌ commit blocked: max CRAP exceeds threshold 8.0 (see report above)" >&2
+  exit 1
+fi
+
+exit 0

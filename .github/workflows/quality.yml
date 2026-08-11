@@ -5,6 +5,8 @@ on: [push, pull_request]
 jobs:
   quality:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
@@ -22,7 +24,8 @@ jobs:
           fi
       - run: go vet ./...
       - name: Test with coverage
-        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
+        run: |
+          go test -race -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee /tmp/gotest.log
       - name: Build
         run: go build -o crap4go .
       - name: Self-analyze (crap4go on its own source)
@@ -34,3 +37,34 @@ jobs:
         # self-analysis step.
         continue-on-error: true
         run: ./crap4go
+      - name: Refresh CRAP + coverage badges
+        # Self-hosting: regenerate the README badges from this run's max CRAP
+        # and overall coverage, then commit them back so the badges stay live.
+        run: |
+          set -euo pipefail
+          max_crap=$(./crap4go --coverage coverage.out | awk '/^Max CRAP:/ {print $3}')
+          # Value formatted to 2 decimals for the CRAP badge.
+          max_crap2=$(awk -v m="$max_crap" 'BEGIN { printf "%.2f", m }')
+          cov=$(awk '/coverage: / { for (i=1;i<=NF;i++) if ($i=="coverage:") { gsub("%","",$(i+1)); print $(i+1); exit } }' /tmp/gotest.log)
+          cov1=$(awk -v c="$cov" 'BEGIN { printf "%.1f", c }')
+          # CRAP color: green ≤8, yellow ≤16, red >16.
+          case $(awk -v m="$max_crap" 'BEGIN { print (m>16)?"r":(m>8)?"y":"g" }') in
+            r) crap_color='#e05d44' ;; y) crap_color='#dfb317' ;; *) crap_color='#4c1' ;;
+          esac
+          # Coverage color: <60 red, <70 orange, <80 yellow, <90 yellowgreen, else green.
+          case $(awk -v c="$cov" 'BEGIN { print (c>=90)?"g":(c>=80)?"yg":(c>=70)?"y":(c>=60)?"o":"r" }') in
+            r) cov_color='#e05d44' ;; o) cov_color='#fe7d37' ;; y) cov_color='#dfb317' ;; yg) cov_color='#a4a61d' ;; *) cov_color='#4c1' ;;
+          esac
+          bash scripts/badge.sh CRAP "$max_crap2" "$crap_color" badges/crap.svg
+          bash scripts/badge.sh coverage "$cov1%" "$cov_color" badges/coverage.svg
+      - name: Commit refreshed badges
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add badges/crap.svg badges/coverage.svg
+          if git diff --cached --quiet; then
+            echo "badges unchanged"
+          else
+            git commit -m "chore: refresh CRAP/coverage badges [skip ci]"
+            git push
+          fi
