@@ -1,0 +1,6 @@
+# Built binary
+/crap4go
+
+# Coverage artifacts
+*.out
+coverage.out
