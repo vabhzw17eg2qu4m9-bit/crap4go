@@ -2,11 +2,12 @@ name: Quality
 
 on: [push, pull_request]
 
+permissions:
+  contents: read
+
 jobs:
   quality:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-go@v6
@@ -24,8 +25,7 @@ jobs:
           fi
       - run: go vet ./...
       - name: Test with coverage
-        run: |
-          go test -race -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee /tmp/gotest.log
+        run: go test -race -coverprofile=coverage.out -covermode=atomic ./...
       - name: Build
         run: go build -o crap4go .
       - name: Self-analyze (crap4go on its own source)
@@ -33,17 +33,27 @@ jobs:
         # the real coverage just generated. Hard 8.0 gate — reports genuine
         # per-method Cov% and Max CRAP. Mirrors the crap4py CI self-analysis.
         run: ./crap4go
-      - name: Refresh CRAP + coverage badges
-        # Self-hosting: regenerate the README badges from this run's max CRAP
-        # and overall coverage, then commit them back so the badges stay live.
-        # Push events only: pull_request runs check out a detached HEAD, so a
-        # git push here would fail; badges are a main-branch artifact anyway.
-        # Skip on the bot's own push so the badge commit doesn't loop; the
-        # badge commit message intentionally omits any skip token so squash
-        # merges aren't poisoned and the main run fires cleanly.
-        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+
+  commit-badges:
+    needs: quality
+    if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version: stable
+          check-latest: true
+      - name: Recompute CRAP + coverage badges
+        # Self-hosting: regenerate the README badges from a fresh coverage run
+        # and this run's max CRAP. Push-only job (never fires on pull_request),
+        # so it never triggers the PR workflow-approval path.
         run: |
           set -euo pipefail
+          go test ./... -coverprofile=coverage.out -covermode=atomic ./... 2>&1 | tee /tmp/gotest.log
+          go build -o crap4go .
           # High threshold ⇒ tool always exits 0 while still printing the real max CRAP.
           max_crap=$(./crap4go --coverage coverage.out --threshold 9999 | awk '/^Max CRAP:/ {print $3}')
           # Value formatted to 2 decimals for the CRAP badge.
@@ -61,12 +71,14 @@ jobs:
           bash scripts/badge.sh CRAP "$max_crap2" "$crap_color" badges/crap.svg
           bash scripts/badge.sh coverage "$cov1%" "$cov_color" badges/coverage.svg
       - name: Commit refreshed badges
-        if: github.event_name == 'push' && github.actor != 'github-actions[bot]'
+        # Bot identity; push only when SVGs changed. continue-on-error so a
+        # protection-rejected push never fails the run. No [skip ci]: squash
+        # merges aren't poisoned and the main run fires cleanly.
         continue-on-error: true
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add badges/crap.svg badges/coverage.svg
+          git add badges/*.svg
           if git diff --cached --quiet; then
             echo "badges unchanged"
           else
