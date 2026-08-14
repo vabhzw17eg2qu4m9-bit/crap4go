@@ -33,15 +33,24 @@ crap4go --threshold <num>        Override CRAP threshold (default 8.0)
 crap4go --run-tests              Run "go test" before analyzing
 crap4go profile [flags] [paths]  Run instrumented tests; report per-method timing
 crap4go file-naming [paths...]   Flag mechanical file names; exit 2 on violations
+crap4go nesting [paths...]       Flag functions nested deeper than 5; exit 2 on violations
+crap4go class-size [paths...]    Flag named types with >25 methods or WMC >80; exit 2
+crap4go weight-of-class [paths...] Flag exported structs with field/member ratio >0.33; exit 2
+crap4go unused-code [paths...]   Flag unexported declarations never referenced; exit 2
+crap4go unused-files [paths...]  Flag packages never imported; exit 2
+crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
+                                 Flag banned imports per from/forbid rule; exit 2
 crap4go skill                    Print the crap4go profiling skill for AI agents
 ```
 
 `--changed` is mutually exclusive with positional paths (usage error if
 combined). Unknown flags are usage errors.
 
-**Subcommands:** `profile`, `skill`, and `file-naming` are dispatched on the
-first argument only, and only on an exact match. Any other first argument —
-flags, paths — takes the analyze path unchanged. Subcommand flags:
+**Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
+`nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
+`banned-imports`) are dispatched on the first argument only, and only on an
+exact match. Any other first argument — flags, paths — takes the analyze path
+unchanged. Subcommand flags:
 
 ```
 profile:
@@ -214,13 +223,127 @@ Output: one line per violation (`<relative path>: <message>`), then a
 summary — `N/M files with mechanical names` or `M files have
 domain-meaningful names`. Exit code 2 iff there are violations.
 
-## 11. `skill`
+### Gate subcommands (ported from crap4dart 0.5.x)
+
+crap4dart 0.5.0 introduced a quality-gate framework (severity, ignorable,
+`crap:ignore` comments, per-gate `entries` overrides, baselines, yaml
+config). The Go port has no gate framework: each gate is a standalone
+subcommand dispatched like `file-naming`, with upstream default thresholds
+hard-coded and violations always failing (exit 2) — severity/ignorable/
+entries/baseline do not apply. Gate checks 11.5–11.10 of the crap4dart
+spec are ported with Go adaptations as described below.
+
+## 11. `nesting`
+
+```
+crap4go nesting [paths...]
+```
+
+Flags functions whose maximum block nesting level exceeds 5 (default
+ported from crap4dart's `nesting` gate). The function body block counts as
+level 1; every nested block or control-flow statement (`if`, `for`,
+`switch`, type-switch, `select`, plain block statement) adds one.
+Control-statement braces do not add a level on top of the statement
+itself; `else if` chains nest one more level per branch (upstream
+visitor semantics). Output: one line per violation
+(`<relative path>:<line>: <func> nesting=N > max 5`) plus a summary
+(`N/M functions nested deeper than 5`). Exit code 2 iff violations.
+
+## 12. `class-size`
+
+```
+crap4go class-size [paths...]
+```
+
+Go adaptation of crap4dart's `class_size` gate: named types replace
+classes, and a type's methods are gathered across the whole package
+directory. A named type fails when it has more than 25 methods (with a
+body) or a weighted-methods sum — total cyclomatic complexity over all
+its methods, counted by the same rules as the analyze command — above 80.
+Output: one line per violation (`<type> has N methods > max 25` and/or
+`<type> WMC=N > max 80`, at the type's first method) plus a summary.
+Exit code 2 iff violations.
+
+## 13. `weight-of-class`
+
+```
+crap4go weight-of-class [paths...]
+```
+
+Go adaptation of crap4dart's `weight_of_class` gate: exported named
+struct types replace public classes; exported methods are gathered across
+the whole package directory. A type fails when its ratio of exported
+fields to exported members (exported fields + exported methods, exported
+embedded types counted as fields) exceeds 0.33. Types without exported
+fields are never flagged. Output: one line per violation (`<type> exposes
+N public fields of M public members (weight=W)`) plus a summary.
+Exit code 2 iff violations.
+
+## 14. `unused-code`
+
+```
+crap4go unused-code [paths...]
+```
+
+Flags unexported package-level declarations — functions (methods
+excluded), types, vars, consts — whose identifier never appears elsewhere
+in the same package. References are counted lexically on unresolved ASTs
+(all identifier occurrences, declaration included; a declaration is
+unused when its identifier occurs exactly once). Non-test files only,
+for both declarations and references (upstream `unused_code` gate
+semantics). Output: one line per violation
+(`<relative path>:<line>: <name> is never referenced`) plus a summary.
+Exit code 2 iff violations.
+
+**Partial selection:** an explicit path selection prints
+`unused-code: not meaningful for a partial selection` and exits 0 —
+a partial file set yields false positives (ported from crap4dart 0.5.1).
+
+## 15. `unused-files`
+
+```
+crap4go unused-files [paths...]
+```
+
+Go adaptation of crap4dart's `unused_files` gate: packages replace
+files. Flags non-main packages in the module (resolved from `go.mod`)
+that are never imported by any other analyzed package; `main` packages
+are entry points and never flagged (upstream never reports files with a
+top-level `main`). Internal imports resolve by stripping the module
+path prefix. Output: one line per violation
+(`<dir>: package <name> is never imported by any analyzed package`) plus
+a summary. Exit code 2 iff violations.
+
+**Partial selection:** an explicit path selection prints
+`unused-files: not meaningful for a partial selection` and exits 0
+(ported from crap4dart 0.5.1).
+
+## 16. `banned-imports`
+
+```
+crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
+```
+
+Enforces architectural boundaries (upstream `banned_imports` gate).
+Rules are `--from`/`--forbid` pairs zipped by CLI order; the optional
+`--message` is appended per rule. For every file whose project-relative
+path matches a rule's `from` glob, each import that matches any `forbid`
+glob — matched against the raw import path and, for imports inside the
+module, its project-relative package directory — is a violation
+(`<relative path>:<line>: import "<path>" is banned for <file> — <message>`).
+Globs support `*`, `?` and `**` (across separators); a leading `**/` and
+trailing `/**` also match zero directories. With no rules the command
+prints `no rules configured` and exits 0; `--from` without `--forbid`
+(or more `--message` values than rules) is a usage error (exit 1).
+Exit code 2 iff violations.
+
+## 17. `skill`
 
 Prints a Go-adapted version of crap4dart's profiling skill (when to profile,
 how the instrumentation works, how to read the report), ending with one line
 on installing it as an agent skill. Always exits 0.
 
-## 12. Threshold
+## 18. Threshold
 
 The threshold defaults to `8.0` and is overridable with `--threshold`. After
 the report is printed, the maximum numeric CRAP is compared against it; if
@@ -228,26 +351,31 @@ the report is printed, the maximum numeric CRAP is compared against it; if
 to stderr and the process exits 2. Otherwise the process exits 0. A threshold
 of `0` or less is a usage error.
 
-## 13. Exit codes
+## 19. Exit codes
 
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
 | `0`  | Success (including empty selection, or max CRAP ≤ threshold).            |
 | `1`  | Usage error: bad flags, bad threshold, `--changed` + paths, unreadable.  |
 | `2`  | Max numeric CRAP exceeded the threshold; `profile` total exceeded        |
-|      | `--threshold`; `file-naming` violations. (Also reported on stderr.)      |
+|      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
+|      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
+|      | `banned-imports`). (Also reported on stderr.)                           |
 
-## 14. `--run-tests`
+## 20. `--run-tests`
 
 Runs `go test ./... -coverprofile=coverage.out -covermode=atomic` in the
 project root, streaming stdout/stderr through. On non-zero exit, the error is
 printed to stderr and the process exits 1.
 
-## 15. Non-goals
+## 21. Non-goals
 
 - No type-checking or build verification — parsing only.
 - No HTML/branch coverage reports — only the statement-level cover profile.
 - No automatic fixing or refactoring of high-CRAP code.
 - No external runtime dependencies (standard library only); no `go.sum`.
-- No config file or gate framework; no profile `--tags`/`--exclude-tags`
-  (no tag concept in `go test`) — all knobs are CLI flags.
+- No config file or gate framework; no gate severity/ignorable/entries/
+  baseline (crap4dart 0.5.0 framework features) — gates are standalone
+  subcommands with hard-coded upstream defaults; no profile
+  `--tags`/`--exclude-tags` (no tag concept in `go test`) — all knobs are
+  CLI flags.
