@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.1.1...v0.2.0) (2026-08-14)
+
+
+### Features
+
+* port profile/skill/file-naming commands from crap4dart 0.4.0 ([#8](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/8)) ([f968416](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/f968416a48611db6bce346f50a5488d5046b6398))
+
 ## [0.1.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.1.0...v0.1.1) (2026-08-11)
 
 
