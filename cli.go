@@ -24,6 +24,13 @@ Subcommands (must be the first argument):
     --threshold <ms>               Exit 2 when a method's total exceeds this (default off)
     --top <N>                      Console rows shown (default 20)
   crap4go file-naming [paths...]   Flag mechanical file names; exit 2 on violations
+  crap4go nesting [paths...]       Flag functions nested deeper than 5; exit 2 on violations
+  crap4go class-size [paths...]    Flag types with >25 methods or WMC >80; exit 2
+  crap4go weight-of-class [paths...] Flag data-heavy exported structs; exit 2
+  crap4go unused-code [paths...]   Flag unexported declarations never referenced; exit 2
+  crap4go unused-files [paths...]  Flag packages never imported; exit 2
+  crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
+                                   Flag banned imports per from/forbid rule; exit 2
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -108,9 +115,10 @@ func warnIfCoverageMissing(resolved, display string, stderr io.Writer) {
 }
 
 // runWithRoot is Run with an explicit project root, used by tests. The first
-// argument, when it exactly matches a subcommand name (profile, skill,
-// file-naming), dispatches to that subcommand; anything else — flags, paths —
-// takes the analyze path, byte-for-byte as before the subcommands existed.
+// argument, when it exactly matches a subcommand name (profile, skill, or a
+// gate from the subcommands table), dispatches to that subcommand; anything
+// else — flags, paths — takes the analyze path, byte-for-byte as before the
+// subcommands existed.
 func runWithRoot(args []string, root string, stdout, stderr io.Writer) int {
 	if code, handled := runSubcommand(args, root, stdout, stderr); handled {
 		return code
@@ -118,19 +126,33 @@ func runWithRoot(args []string, root string, stdout, stderr io.Writer) int {
 	return runAnalyze(args, root, stdout, stderr)
 }
 
-// runSubcommand executes a subcommand when args[0] exactly matches one of
-// profile, skill, or file-naming; otherwise it reports not handled.
+// subcommands maps gate subcommand names to their runners; all share the
+// (args, root, stdout, stderr) signature and return the exit code.
+var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
+	"file-naming":     RunFileNamingCommand,
+	"nesting":         RunNestingCommand,
+	"class-size":      RunClassSizeCommand,
+	"weight-of-class": RunWeightOfClassCommand,
+	"unused-code":     RunUnusedCodeCommand,
+	"unused-files":    RunUnusedFilesCommand,
+	"banned-imports":  RunBannedImportsCommand,
+}
+
+// runSubcommand executes a subcommand when args[0] exactly matches a known
+// name (profile, skill, or a gate from the subcommands table); otherwise it
+// reports not handled.
 func runSubcommand(args []string, root string, stdout, stderr io.Writer) (int, bool) {
 	if len(args) == 0 {
 		return 0, false
+	}
+	if cmd, ok := subcommands[args[0]]; ok {
+		return cmd(args[1:], root, stdout, stderr), true
 	}
 	switch args[0] {
 	case "profile":
 		return RunProfileCommand(args[1:], root, stdout, stderr), true
 	case "skill":
 		return RunSkillCommand(stdout), true
-	case "file-naming":
-		return RunFileNamingCommand(args[1:], root, stdout, stderr), true
 	}
 	return 0, false
 }

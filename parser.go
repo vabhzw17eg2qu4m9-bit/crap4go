@@ -6,6 +6,17 @@ import (
 	"go/token"
 )
 
+// parseGoFile parses one Go source file from disk, returning its AST with
+// the file set used for line positions. Used by the gate subcommands.
+func parseGoFile(path string) (*ast.File, *token.FileSet, error) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, path, nil, 0)
+	if err != nil {
+		return nil, nil, err
+	}
+	return f, fset, nil
+}
+
 // ExtractMethods parses Go source and returns one MethodDescriptor per
 // function or method declaration that has a body. Interface method declarations
 // (no body) are skipped. Names follow the form "(Foo)Bar" for methods or "Bar"

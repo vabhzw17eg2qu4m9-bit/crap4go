@@ -58,12 +58,20 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 
 ### Subcommands
 
-`profile`, `skill`, and `file-naming` dispatch on the first argument only;
-anything else takes the analyze path above.
+`profile`, `skill`, and the gate subcommands (`file-naming`, `nesting`,
+`class-size`, `weight-of-class`, `unused-code`, `unused-files`,
+`banned-imports`) dispatch on the first argument only; anything else takes
+the analyze path above.
 
 ```sh
 crap4go profile --name TestParser   # run instrumented tests, report per-method timing
 crap4go file-naming                 # flag mechanical file names (util.go, batch1.go, ...)
+crap4go nesting                     # flag functions nested deeper than 5
+crap4go class-size                  # flag types with >25 methods or WMC >80
+crap4go weight-of-class             # flag data-heavy exported structs (fields > 33% of members)
+crap4go unused-code                 # flag unexported declarations never referenced
+crap4go unused-files                # flag packages never imported by analyzed code
+crap4go banned-imports --from 'ui/**' --forbid '**/db/**' --message 'UI must not touch storage'
 crap4go skill                       # print the profiling skill for AI agents
 ```
 
@@ -76,6 +84,22 @@ are written to `profile-reports/`. `file-naming` reports files whose stems
 are generic dumping-grounds (`util.go`, `helpers.go`, ...) or carry numeric
 suffixes (`batch1.go`, `configv2.go`), exiting 2 on violations; technical
 stems like `base64.go` or `sha256.go` are accepted.
+
+The remaining gates are ported from crap4dart 0.5.x as subcommands (there is
+no gate framework: no severity/ignorable/entries/baseline — violations
+always fail with exit 2, thresholds keep upstream defaults). `nesting` fails
+functions whose block nesting exceeds 5 (body = level 1). `class-size` fails
+named types with more than 25 methods or a weighted-methods sum (total
+cyclomatic complexity) above 80, methods gathered across the package.
+`weight-of-class` fails exported struct types whose exported fields make up
+more than 33% of exported members. `unused-code` flags unexported
+package-level declarations never referenced elsewhere in their package;
+`unused-files` flags non-main packages never imported by analyzed code —
+both skip with exit 0 on an explicit path selection (not meaningful for a
+partial selection). `banned-imports` takes repeatable
+`--from GLOB --forbid GLOB [--message MSG]` rules; for every file matching
+`from`, imports matching `forbid` (raw path or module-relative directory)
+are violations; with no rules it passes.
 
 ### Flag ordering
 
