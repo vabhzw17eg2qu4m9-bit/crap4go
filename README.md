@@ -56,6 +56,27 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 | `--run-tests` | off            | Run `go test ./... -coverprofile -covermode=atomic`.     |
 | `--help`      | —              | Print usage and exit 0.                                  |
 
+### Subcommands
+
+`profile`, `skill`, and `file-naming` dispatch on the first argument only;
+anything else takes the analyze path above.
+
+```sh
+crap4go profile --name TestParser   # run instrumented tests, report per-method timing
+crap4go file-naming                 # flag mechanical file names (util.go, batch1.go, ...)
+crap4go skill                       # print the profiling skill for AI agents
+```
+
+`profile` copies the module to a temp dir, wraps every function body with a
+defer-based timer, runs `go test` against the copy, and prints a timing table
+(`TOTAL(ms) % CALLS MEAN(µs) MAX(µs) @60fps(ms) METHOD FILE:LINE`, sorted by
+total descending). `--top <N>` limits the console rows (default 20);
+`--threshold <ms>` exits 2 when any method's total exceeds it. Full reports
+are written to `profile-reports/`. `file-naming` reports files whose stems
+are generic dumping-grounds (`util.go`, `helpers.go`, ...) or carry numeric
+suffixes (`batch1.go`, `configv2.go`), exiting 2 on violations; technical
+stems like `base64.go` or `sha256.go` are accepted.
+
 ### Flag ordering
 
 `crap4go` uses Go's standard `flag` package, which **stops parsing at the first
@@ -146,6 +167,7 @@ crap4go/
   go.mod          main.go        crap.go        complexity.go
   parser.go       coverage.go    analyzer.go    report.go
   files.go        runtests.go    cli.go
+  profile.go      profile_collector.go   filenaming.go   skill.go
   *_test.go       testdata/
 ```
 

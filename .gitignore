@@ -4,3 +4,7 @@
 # Coverage artifacts
 *.out
 coverage.out
+
+# Profiling artifacts
+profile-reports/
+.crap_profile_temp/

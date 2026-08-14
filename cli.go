@@ -18,6 +18,14 @@ const usage = `Usage:
   crap4go --threshold <num>        Override the CRAP threshold (default 8.0)
   crap4go --run-tests              Run "go test" before analyzing
 
+Subcommands (must be the first argument):
+  crap4go profile [flags] [paths]  Run instrumented tests; report per-method timing
+    --name <pattern>               Run only tests matching the pattern (go test -run)
+    --threshold <ms>               Exit 2 when a method's total exceeds this (default off)
+    --top <N>                      Console rows shown (default 20)
+  crap4go file-naming [paths...]   Flag mechanical file names; exit 2 on violations
+  crap4go skill                    Print the crap4go profiling skill for AI agents
+
 Note: Go's flag package stops parsing at the first non-flag argument, so all
 flags must appear before positional paths. Both -flag and --flag are accepted.
 `
@@ -99,8 +107,37 @@ func warnIfCoverageMissing(resolved, display string, stderr io.Writer) {
 	}
 }
 
-// runWithRoot is Run with an explicit project root, used by tests.
+// runWithRoot is Run with an explicit project root, used by tests. The first
+// argument, when it exactly matches a subcommand name (profile, skill,
+// file-naming), dispatches to that subcommand; anything else — flags, paths —
+// takes the analyze path, byte-for-byte as before the subcommands existed.
 func runWithRoot(args []string, root string, stdout, stderr io.Writer) int {
+	if code, handled := runSubcommand(args, root, stdout, stderr); handled {
+		return code
+	}
+	return runAnalyze(args, root, stdout, stderr)
+}
+
+// runSubcommand executes a subcommand when args[0] exactly matches one of
+// profile, skill, or file-naming; otherwise it reports not handled.
+func runSubcommand(args []string, root string, stdout, stderr io.Writer) (int, bool) {
+	if len(args) == 0 {
+		return 0, false
+	}
+	switch args[0] {
+	case "profile":
+		return RunProfileCommand(args[1:], root, stdout, stderr), true
+	case "skill":
+		return RunSkillCommand(stdout), true
+	case "file-naming":
+		return RunFileNamingCommand(args[1:], root, stdout, stderr), true
+	}
+	return 0, false
+}
+
+// runAnalyze is the original analyze flow: parse flags, select source files,
+// optionally run tests, then emit the CRAP report.
+func runAnalyze(args []string, root string, stdout, stderr io.Writer) int {
 	opts, code, ok := parseOptions(args, stdout, stderr)
 	if !ok {
 		return code
