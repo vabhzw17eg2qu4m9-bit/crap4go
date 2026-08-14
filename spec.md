@@ -31,10 +31,28 @@ crap4go --help                   Print usage; exit 0
 crap4go --coverage <path>        Override coverage profile (default coverage.out)
 crap4go --threshold <num>        Override CRAP threshold (default 8.0)
 crap4go --run-tests              Run "go test" before analyzing
+crap4go profile [flags] [paths]  Run instrumented tests; report per-method timing
+crap4go file-naming [paths...]   Flag mechanical file names; exit 2 on violations
+crap4go skill                    Print the crap4go profiling skill for AI agents
 ```
 
 `--changed` is mutually exclusive with positional paths (usage error if
 combined). Unknown flags are usage errors.
+
+**Subcommands:** `profile`, `skill`, and `file-naming` are dispatched on the
+first argument only, and only on an exact match. Any other first argument —
+flags, paths — takes the analyze path unchanged. Subcommand flags:
+
+```
+profile:
+  --name <pattern>               Run only tests matching the pattern (go test -run)
+  --threshold <ms>               Exit 2 when a method's total exceeds this (default off)
+  --top <N>                      Console rows shown (default 20)
+```
+
+The upstream `--tags`/`--exclude-tags` and config-file options are skipped:
+Go's `go test` has no tag concept, and the port has no config system — all
+knobs are CLI flags with upstream defaults.
 
 **Flag ordering:** built on Go's `flag` package, which stops at the first
 non-flag argument. All flags must precede positional paths. `-flag` and
@@ -128,7 +146,81 @@ by File ascending then StartLine ascending. `CC` is right-aligned; `Cov%`
 prints as a percentage with one decimal (or `N/A`); `CRAP` prints with one
 decimal (or `N/A`). When every CRAP is `N/A`, max is treated as `0.0`.
 
-## 9. Threshold
+## 9. `profile`
+
+```
+crap4go profile [--name <pattern>] [--threshold <ms>] [--top <N>] [paths...]
+```
+
+Runs the test suite against instrumented source code and reports per-method
+timing data. Source instrumentation: the module is copied to
+`.crap_profile_temp/`, every function/method body in the copy is wrapped with
+`defer crap4goRecord("<file>|<method>")()` — a defer-based timer that records
+elapsed microseconds on exit — plus a small generated collector per package
+that appends each call to a per-process log (`go test` runs each package as
+its own binary, so no cross-process locking is needed). `go test -count=1`
+runs against the copy (`-count=1` bypasses Go's test cache, which would
+otherwise skip the instrumented binaries); the temp directory is cleaned up
+automatically after the run (kept when `CRAP_PROFILE_DEBUG` is set).
+
+Test selection: `--name` is forwarded to `go test -run`; positional paths are
+forwarded verbatim; without paths, `./...` runs. `--top` (default 20) limits
+the console table; `--threshold <ms>` (default off) makes the command exit 2
+when any method's total time exceeds it.
+
+Method attribution: timing data is matched to the project's method inventory
+(same parsing as analyze, keyed by relative file path plus method name).
+Timing entries that do not match a project method are ignored. Test files
+(`*_test.go`) are not instrumented; unparseable files (e.g. `testdata/`
+fixtures) are left unchanged.
+
+### Profile Report
+
+A fixed-width table is written to stdout, sorted by total time descending:
+
+```
+TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE
+```
+
+- **total time** — total execution time across all calls
+- **calls** — number of invocations
+- **mean time** — average time per call
+- **max time** — slowest single call
+- **@60fps** — estimated cost when called 60× per second (mean × 60, in
+  milliseconds), highlighting methods that are cheap per-call but costly on
+  hot paths
+
+The full (untruncated) table and a JSON report are also written to
+`profile-reports/profile-<timestamp>.txt` and `.json`.
+
+## 10. `file-naming`
+
+```
+crap4go file-naming [paths...]
+```
+
+Flags Go files whose names indicate a mechanical split instead of a domain
+boundary. Selection defaults to the normal analyze rules (non-test,
+non-vendor `.go` files under the root). A file is flagged when its stem (name
+without the `.go` extension), lower-cased, either ends in digits preceded by
+a letter or underscore (`jira_batch1`, `report2`, `day_1`, `configv3`) or
+equals a generic dumping-ground stem (`common`, `core`, `general`, `helper`,
+`helpers`, `misc`, `shared`, `stuff`, `temp`, `tmp`, `types`, `util`,
+`utils`, `utilities`, `utility`, `various`). Whole technical stems ending in
+digits (`base64`, `sha256`, `utf8`, `oauth2`, ...) are accepted by default
+(the upstream `defaultAllowedStems` list).
+
+Output: one line per violation (`<relative path>: <message>`), then a
+summary — `N/M files with mechanical names` or `M files have
+domain-meaningful names`. Exit code 2 iff there are violations.
+
+## 11. `skill`
+
+Prints a Go-adapted version of crap4dart's profiling skill (when to profile,
+how the instrumentation works, how to read the report), ending with one line
+on installing it as an agent skill. Always exits 0.
+
+## 12. Threshold
 
 The threshold defaults to `8.0` and is overridable with `--threshold`. After
 the report is printed, the maximum numeric CRAP is compared against it; if
@@ -136,23 +228,26 @@ the report is printed, the maximum numeric CRAP is compared against it; if
 to stderr and the process exits 2. Otherwise the process exits 0. A threshold
 of `0` or less is a usage error.
 
-## 10. Exit codes
+## 13. Exit codes
 
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
 | `0`  | Success (including empty selection, or max CRAP ≤ threshold).            |
 | `1`  | Usage error: bad flags, bad threshold, `--changed` + paths, unreadable.  |
-| `2`  | Max numeric CRAP exceeded the threshold (also reported on stderr).       |
+| `2`  | Max numeric CRAP exceeded the threshold; `profile` total exceeded        |
+|      | `--threshold`; `file-naming` violations. (Also reported on stderr.)      |
 
-## 11. `--run-tests`
+## 14. `--run-tests`
 
 Runs `go test ./... -coverprofile=coverage.out -covermode=atomic` in the
 project root, streaming stdout/stderr through. On non-zero exit, the error is
 printed to stderr and the process exits 1.
 
-## 12. Non-goals
+## 15. Non-goals
 
 - No type-checking or build verification — parsing only.
 - No HTML/branch coverage reports — only the statement-level cover profile.
 - No automatic fixing or refactoring of high-CRAP code.
 - No external runtime dependencies (standard library only); no `go.sum`.
+- No config file or gate framework; no profile `--tags`/`--exclude-tags`
+  (no tag concept in `go test`) — all knobs are CLI flags.
