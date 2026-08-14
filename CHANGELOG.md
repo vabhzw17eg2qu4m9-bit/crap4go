@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.2.0...v0.3.0) (2026-08-14)
+
+
+### Features
+
+* port 6 gate checks from crap4dart 0.5.x as subcommands ([#10](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/10)) ([17e498c](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/17e498cf0fceb0084dc1dc62f9fc69d81cc66728))
+
 ## [0.2.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.1.1...v0.2.0) (2026-08-14)
 
 
