@@ -31,6 +31,7 @@ Subcommands (must be the first argument):
   crap4go unused-files [paths...]  Flag packages never imported; exit 2
   crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
                                    Flag banned imports per from/forbid rule; exit 2
+  crap4go magic-constants [paths...] Flag magic literals (hex colors, repeats); exit 2
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -136,6 +137,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"unused-code":     RunUnusedCodeCommand,
 	"unused-files":    RunUnusedFilesCommand,
 	"banned-imports":  RunBannedImportsCommand,
+	"magic-constants": RunMagicConstantsCommand,
 }
 
 // runSubcommand executes a subcommand when args[0] exactly matches a known

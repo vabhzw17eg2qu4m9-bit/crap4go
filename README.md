@@ -60,8 +60,8 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 
 `profile`, `skill`, and the gate subcommands (`file-naming`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
-`banned-imports`) dispatch on the first argument only; anything else takes
-the analyze path above.
+`banned-imports`, `magic-constants`) dispatch on the first argument only;
+anything else takes the analyze path above.
 
 ```sh
 crap4go profile --name TestParser   # run instrumented tests, report per-method timing
@@ -72,7 +72,8 @@ crap4go weight-of-class             # flag data-heavy exported structs (fields >
 crap4go unused-code                 # flag unexported declarations never referenced
 crap4go unused-files                # flag packages never imported by analyzed code
 crap4go banned-imports --from 'ui/**' --forbid '**/db/**' --message 'UI must not touch storage'
-crap4go skill                       # print the profiling skill for AI agents
+crap4go magic-constants           # flag hex colors outside consts and repeated literals
+crap4go skill                     # print the profiling skill for AI agents
 ```
 
 `profile` copies the module to a temp dir, wraps every function body with a
@@ -85,21 +86,27 @@ are generic dumping-grounds (`util.go`, `helpers.go`, ...) or carry numeric
 suffixes (`batch1.go`, `configv2.go`), exiting 2 on violations; technical
 stems like `base64.go` or `sha256.go` are accepted.
 
-The remaining gates are ported from crap4dart 0.5.x as subcommands (there is
-no gate framework: no severity/ignorable/entries/baseline — violations
-always fail with exit 2, thresholds keep upstream defaults). `nesting` fails
-functions whose block nesting exceeds 5 (body = level 1). `class-size` fails
-named types with more than 25 methods or a weighted-methods sum (total
-cyclomatic complexity) above 80, methods gathered across the package.
-`weight-of-class` fails exported struct types whose exported fields make up
-more than 33% of exported members. `unused-code` flags unexported
-package-level declarations never referenced elsewhere in their package;
-`unused-files` flags non-main packages never imported by analyzed code —
-both skip with exit 0 on an explicit path selection (not meaningful for a
-partial selection). `banned-imports` takes repeatable
+The remaining gates are ported from crap4dart 0.5.x and 0.6.0 as
+subcommands (there is no gate framework: no severity/ignorable/entries/
+baseline — violations always fail with exit 2, thresholds keep upstream
+defaults; 0.6.0's baseline/severity/config knobs and 0.6.1's internal
+refactor do not apply, and 0.5.2's profile fix is Dart-only). `nesting`
+fails functions whose block nesting exceeds 5 (body = level 1).
+`class-size` fails named types with more than 25 methods or a
+weighted-methods sum (total cyclomatic complexity) above 80, methods
+gathered across the package. `weight-of-class` fails exported struct
+types whose exported fields make up more than 33% of exported members.
+`unused-code` flags unexported package-level declarations never
+referenced elsewhere in their package; `unused-files` flags non-main
+packages never imported by analyzed code — both skip with exit 0 on an
+explicit path selection (not meaningful for a partial selection).
+`banned-imports` takes repeatable
 `--from GLOB --forbid GLOB [--message MSG]` rules; for every file matching
 `from`, imports matching `forbid` (raw path or module-relative directory)
-are violations; with no rules it passes.
+are violations; with no rules it passes. `magic-constants` (from 0.6.0)
+flags hex color integer literals (`0xRRGGBB`/`0xAARRGGBB`) outside const
+declarations and numeric or string literals repeating 3+ times in one
+file (values shorter than 4 characters ignored).
 
 ### Flag ordering
 
