@@ -40,6 +40,7 @@ crap4go unused-code [paths...]   Flag unexported declarations never referenced; 
 crap4go unused-files [paths...]  Flag packages never imported; exit 2
 crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
                                  Flag banned imports per from/forbid rule; exit 2
+crap4go magic-constants [paths...] Flag magic literals; exit 2 on violations
 crap4go skill                    Print the crap4go profiling skill for AI agents
 ```
 
@@ -48,7 +49,8 @@ combined). Unknown flags are usage errors.
 
 **Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
-`banned-imports`) are dispatched on the first argument only, and only on an
+`banned-imports`, `magic-constants`) are dispatched on the first argument
+only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
 
@@ -223,7 +225,7 @@ Output: one line per violation (`<relative path>: <message>`), then a
 summary — `N/M files with mechanical names` or `M files have
 domain-meaningful names`. Exit code 2 iff there are violations.
 
-### Gate subcommands (ported from crap4dart 0.5.x)
+### Gate subcommands (ported from crap4dart 0.5.x and 0.6.0)
 
 crap4dart 0.5.0 introduced a quality-gate framework (severity, ignorable,
 `crap:ignore` comments, per-gate `entries` overrides, baselines, yaml
@@ -231,7 +233,11 @@ config). The Go port has no gate framework: each gate is a standalone
 subcommand dispatched like `file-naming`, with upstream default thresholds
 hard-coded and violations always failing (exit 2) — severity/ignorable/
 entries/baseline do not apply. Gate checks 11.5–11.10 of the crap4dart
-spec are ported with Go adaptations as described below.
+spec are ported with Go adaptations as described below; `magic-constants`
+comes from 0.6.0 (§11.13). Not applicable upstream changes: 0.5.2's
+profile part-of fix is Dart-only; 0.6.0's baseline/severity/config knobs
+have no counterpart (no gate framework); 0.6.1's internal constants
+refactor changes no behavior.
 
 ## 11. `nesting`
 
@@ -337,13 +343,32 @@ prints `no rules configured` and exits 0; `--from` without `--forbid`
 (or more `--message` values than rules) is a usage error (exit 1).
 Exit code 2 iff violations.
 
-## 17. `skill`
+## 17. `magic-constants`
+
+```
+crap4go magic-constants [paths...]
+```
+
+Go adaptation of crap4dart 0.6.0's `magic_constants` gate. Two checks:
+(a) integer literals whose lexeme matches `^0[xX][0-9a-fA-F]{6,8}$`
+(`0xRRGGBB` / `0xAARRGGBB`) outside named constant declarations — the
+start line of every value in a `const` spec plus the start lines of a
+direct call initializer's arguments are exempt; (b) numeric (int/float,
+by raw lexeme) and string (unquoted value) literals whose value repeats
+at least 3 times in one file — every occurrence is reported. Values
+shorter than 4 characters are ignored; char and imaginary literals have
+no upstream counterpart and never count. Output: one line per violation
+(`<relative path>:<line>: hex color outside a constant declaration` or
+`<relative path>:<line>: literal <value> repeats N times — extract a named
+constant`) plus a summary. Exit code 2 iff violations.
+
+## 18. `skill`
 
 Prints a Go-adapted version of crap4dart's profiling skill (when to profile,
 how the instrumentation works, how to read the report), ending with one line
 on installing it as an agent skill. Always exits 0.
 
-## 18. Threshold
+## 19. Threshold
 
 The threshold defaults to `8.0` and is overridable with `--threshold`. After
 the report is printed, the maximum numeric CRAP is compared against it; if
@@ -351,7 +376,7 @@ the report is printed, the maximum numeric CRAP is compared against it; if
 to stderr and the process exits 2. Otherwise the process exits 0. A threshold
 of `0` or less is a usage error.
 
-## 19. Exit codes
+## 20. Exit codes
 
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
@@ -360,15 +385,15 @@ of `0` or less is a usage error.
 | `2`  | Max numeric CRAP exceeded the threshold; `profile` total exceeded        |
 |      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
-|      | `banned-imports`). (Also reported on stderr.)                           |
+|      | `banned-imports`, `magic-constants`). (Also reported on stderr.)         |
 
-## 20. `--run-tests`
+## 21. `--run-tests`
 
 Runs `go test ./... -coverprofile=coverage.out -covermode=atomic` in the
 project root, streaming stdout/stderr through. On non-zero exit, the error is
 printed to stderr and the process exits 1.
 
-## 21. Non-goals
+## 22. Non-goals
 
 - No type-checking or build verification — parsing only.
 - No HTML/branch coverage reports — only the statement-level cover profile.
