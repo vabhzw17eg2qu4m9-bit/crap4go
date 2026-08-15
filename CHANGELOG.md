@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.3.0...v0.4.0) (2026-08-15)
+
+
+### Features
+
+* port magic_constants check from crap4dart 0.6.0 as subcommand ([#12](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/12)) ([79a53cb](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/79a53cbf0565d4d2ad447e8932bdb8d12e4cd8d4))
+
 ## [0.3.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.2.0...v0.3.0) (2026-08-14)
 
 
