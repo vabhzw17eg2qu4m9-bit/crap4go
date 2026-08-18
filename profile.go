@@ -100,7 +100,7 @@ func RunProfileCommand(args []string, root string, stdout, stderr io.Writer) int
 		return 1
 	}
 	fmt.Fprintln(stderr, "Running instrumented tests...")
-	if err := runInstrumentedTests(tempDir, outDir, opts, stdout, stderr); err != nil {
+	if err := runInstrumentedTests(root, tempDir, outDir, opts, stdout, stderr); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
@@ -285,18 +285,38 @@ func writeCollectors(collectors map[string]string) error {
 // runInstrumentedTests runs `go test -count=1` in dir with the collector
 // output directory in the environment. -count=1 bypasses Go's test cache,
 // which would otherwise skip running the instrumented binaries. Positional
-// paths are forwarded verbatim; without paths the whole module (./...) runs.
-func runInstrumentedTests(dir, outDir string, opts profileOptions, stdout, stderr io.Writer) error {
+// paths are remapped from the original project root into the instrumented
+// copy; without paths the whole module (./...) runs.
+func runInstrumentedTests(root, dir, outDir string, opts profileOptions, stdout, stderr io.Writer) error {
 	args := []string{"test", "-count=1"}
 	if opts.name != "" {
 		args = append(args, "-run", opts.name)
 	}
 	if len(opts.paths) > 0 {
-		args = append(args, opts.paths...)
+		args = append(args, remapProfilePaths(root, opts.paths)...)
 	} else {
 		args = append(args, "./...")
 	}
 	return runGoTests(dir, args, append(os.Environ(), "CRAP_PROFILE_DIR="+outDir), stdout, stderr)
+}
+
+// remapProfilePaths remaps explicit test paths into the instrumented temp
+// copy: project-relative paths stay unchanged (they resolve inside the temp
+// copy, the working directory of go test), and absolute paths under the
+// original project root become "./<rel>" — otherwise go test would run the
+// ORIGINAL, non-instrumented files and produce empty reports (ported from
+// crap4dart 0.9).
+func remapProfilePaths(root string, paths []string) []string {
+	remapped := make([]string, 0, len(paths))
+	for _, p := range paths {
+		rel, err := filepath.Rel(root, p)
+		if !filepath.IsAbs(p) || err != nil || strings.HasPrefix(rel, "..") {
+			remapped = append(remapped, p)
+			continue
+		}
+		remapped = append(remapped, "./"+filepath.ToSlash(rel))
+	}
+	return remapped
 }
 
 // readTimings aggregates the collectors' prof-*.jsonl logs in dir into
@@ -423,11 +443,11 @@ func FormatProfileReport(profiles []methodProfile, top int, thresholdMs float64)
 	b.WriteString("TOTAL(ms)     %  CALLS  MEAN(µs)  MAX(µs)  @60fps(ms)  METHOD                     FILE:LINE\n")
 	b.WriteString("------------------------------------------------------------------------------------------\n")
 	for _, p := range topProfiles(profiles, top) {
-		fmt.Fprintf(&b, "%9.2f %5.1f%% %6d %9.1f %8d %10.2f  %-25s %s:%d\n",
+		fmt.Fprintf(&b, "%9.2f %5.1f%% %6d %9s %8d %10.2f  %-25s %s:%d\n",
 			float64(p.Timing.TotalMicros)/1000.0,
 			shareOfTotal(p.Timing.TotalMicros, total),
 			p.Timing.Calls,
-			p.Timing.MeanMicros(),
+			formatMeanMicros(p.Timing.MeanMicros()),
 			p.Timing.MaxMicros,
 			p.Timing.MeanMicros()*60.0/1000.0,
 			p.Method.Name,
@@ -446,6 +466,18 @@ func topProfiles(profiles []methodProfile, top int) []methodProfile {
 		return profiles
 	}
 	return profiles[:top]
+}
+
+// formatMeanMicros renders the MEAN column, marking sub-30µs means with ~:
+// the defer-based instrumentation costs on the order of a microsecond per
+// call, so such means are mostly noise from the profiler itself — read the
+// CALLS and TOTAL deltas instead (ported from crap4dart 0.9.2).
+func formatMeanMicros(mean float64) string {
+	s := fmt.Sprintf("%.1f", mean)
+	if mean < 30 {
+		return "~" + s
+	}
+	return s
 }
 
 // shareOfTotal returns the percentage share of total time.

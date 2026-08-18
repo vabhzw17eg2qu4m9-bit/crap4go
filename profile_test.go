@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"os"
@@ -285,6 +286,41 @@ func TestRun_ProfileBadFlag(t *testing.T) {
 	var out, errOut bytes.Buffer
 	if code := runWithRoot([]string{"profile", "--bogus"}, root, &out, &errOut); code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
+	}
+}
+
+// TestRemapProfilePaths is the 0.9 regression: absolute paths under the
+// original project must point into the instrumented copy, or go test runs
+// the original, non-instrumented files and the report comes back empty.
+func TestRemapProfilePaths(t *testing.T) {
+	root := t.TempDir()
+	src := root + string(filepath.Separator)
+	got := remapProfilePaths(root, []string{
+		src + "parser", // abs dir under root
+		src + "pkg" + string(filepath.Separator) + "a_test.go", // abs file under root
+		"./pkg/...",                // project-relative stays
+		"/elsewhere/other_test.go", // abs outside root stays
+	})
+	want := []string{"./parser", "./pkg/a_test.go", "./pkg/...", "/elsewhere/other_test.go"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("remapped = %v, want %v", got, want)
+	}
+}
+
+func TestFormatProfileReportMeanCaveat(t *testing.T) {
+	profiles := []methodProfile{
+		{Method: MethodDescriptor{Name: "Fastish"}, File: "a.go", Timing: timingStats{Calls: 100, TotalMicros: 1000, MinMicros: 10, MaxMicros: 10}},
+		{Method: MethodDescriptor{Name: "Slowish"}, File: "a.go", Timing: timingStats{Calls: 10, TotalMicros: 1000000, MinMicros: 100000, MaxMicros: 100000}},
+	}
+	report := FormatProfileReport(profiles, 0, 0)
+	if !strings.Contains(report, "~10.0") {
+		t.Errorf("sub-30µs mean not marked with ~:\n%s", report)
+	}
+	if !strings.Contains(report, "100000.0") {
+		t.Errorf("large mean rendered wrong:\n%s", report)
+	}
+	if strings.Count(report, "~") != 1 {
+		t.Errorf("exactly one mean should carry the caveat:\n%s", report)
 	}
 }
 

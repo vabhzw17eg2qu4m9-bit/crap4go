@@ -60,8 +60,9 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 
 `profile`, `skill`, and the gate subcommands (`file-naming`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
-`banned-imports`, `magic-constants`) dispatch on the first argument only;
-anything else takes the analyze path above.
+`banned-imports`, `magic-constants`, `test-assertions`,
+`folder-structure`) dispatch on the first argument only; anything else
+takes the analyze path above.
 
 ```sh
 crap4go profile --name TestParser   # run instrumented tests, report per-method timing
@@ -73,24 +74,29 @@ crap4go unused-code                 # flag unexported declarations never referen
 crap4go unused-files                # flag packages never imported by analyzed code
 crap4go banned-imports --from 'ui/**' --forbid '**/db/**' --message 'UI must not touch storage'
 crap4go magic-constants           # flag hex colors outside consts and repeated literals
+crap4go test-assertions           # flag tests with no fail-capable calls (t.Error/Fatal/..., panic)
+crap4go folder-structure           # flag dirs with loose .go files at the module root
 crap4go skill                     # print the profiling skill for AI agents
 ```
 
 `profile` copies the module to a temp dir, wraps every function body with a
 defer-based timer, runs `go test` against the copy, and prints a timing table
 (`TOTAL(ms) % CALLS MEAN(µs) MAX(µs) @60fps(ms) METHOD FILE:LINE`, sorted by
-total descending). `--top <N>` limits the console rows (default 20);
+total descending; sub-30µs means are marked `~` — instrumentation overhead
+dominates there, so read the CALLS/TOTAL deltas instead). `--top <N>` limits
+the console rows (default 20);
 `--threshold <ms>` exits 2 when any method's total exceeds it. Full reports
 are written to `profile-reports/`. `file-naming` reports files whose stems
 are generic dumping-grounds (`util.go`, `helpers.go`, ...) or carry numeric
 suffixes (`batch1.go`, `configv2.go`), exiting 2 on violations; technical
 stems like `base64.go` or `sha256.go` are accepted.
 
-The remaining gates are ported from crap4dart 0.5.x and 0.6.0 as
+The remaining gates are ported from crap4dart 0.5.x–0.9.2 as
 subcommands (there is no gate framework: no severity/ignorable/entries/
 baseline — violations always fail with exit 2, thresholds keep upstream
 defaults; 0.6.0's baseline/severity/config knobs and 0.6.1's internal
-refactor do not apply, and 0.5.2's profile fix is Dart-only). `nesting`
+refactor do not apply, and 0.5.2's profile fix is Dart-only).
+`nesting`
 fails functions whose block nesting exceeds 5 (body = level 1).
 `class-size` fails named types with more than 25 methods or a
 weighted-methods sum (total cyclomatic complexity) above 80, methods
@@ -99,14 +105,25 @@ types whose exported fields make up more than 33% of exported members.
 `unused-code` flags unexported package-level declarations never
 referenced elsewhere in their package; `unused-files` flags non-main
 packages never imported by analyzed code — both skip with exit 0 on an
-explicit path selection (not meaningful for a partial selection).
+explicit path selection (not meaningful for a partial selection; Go has
+no re-export concept, so 0.7.1's export edges do not apply).
 `banned-imports` takes repeatable
 `--from GLOB --forbid GLOB [--message MSG]` rules; for every file matching
 `from`, imports matching `forbid` (raw path or module-relative directory)
-are violations; with no rules it passes. `magic-constants` (from 0.6.0)
+are violations; with no rules it passes. `magic-constants` (from 0.6.0
+plus the 0.7–0.9 precision fixes)
 flags hex color integer literals (`0xRRGGBB`/`0xAARRGGBB`) outside const
 declarations and numeric or string literals repeating 3+ times in one
-file (values shorter than 4 characters ignored).
+file among their non-const-line occurrences (values shorter than 4
+characters ignored; string literals in identifier position — map-literal
+keys, index operands, switch case labels — never count).
+`test-assertions` (from 0.9) flags `Test*` functions in `*_test.go`
+files that cannot fail the test: no fail-capable `*testing.T` method
+call (`Error`/`Errorf`/`Fatal`/`Fatalf`/`Fail`/`FailNow`, including via
+subtest closures) and no `panic()` — a test without assertions verifies
+nothing. `folder-structure` (from 0.9) flags directories holding more
+than 0 loose `.go` files directly (default: the module root) — group
+them into feature packages.
 
 ### Flag ordering
 
@@ -137,8 +154,10 @@ pkg/path/file.go:startLine.startCol,endLine.endCol numStmt count
 
 Paths in the profile are module-prefixed (e.g. `example.com/pkg/foo.go`);
 `crap4go` matches them to source files by exact path, then by basename.
-If the profile is missing, a warning is printed to stderr and every method's
-coverage/CRAP is reported as `N/A`.
+If the profile is missing, a warning is printed to stderr — with a hint
+to run `go test ./... -coverprofile=coverage.out -covermode=atomic` (or
+pass `--run-tests`) — and every method's coverage/CRAP is reported as
+`N/A`.
 
 ## Report
 
@@ -199,6 +218,7 @@ crap4go/
   parser.go       coverage.go    analyzer.go    report.go
   files.go        runtests.go    cli.go
   profile.go      profile_collector.go   filenaming.go   skill.go
+  magicconstants.go   testassertions.go   folderstructure.go
   *_test.go       testdata/
 ```
 

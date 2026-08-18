@@ -128,6 +128,9 @@ func TestRun_MissingCoverageWarnsButSucceeds(t *testing.T) {
 	if !strings.Contains(errOut.String(), "Warning:") {
 		t.Errorf("stderr missing warning: %q", errOut.String())
 	}
+	if !strings.Contains(errOut.String(), "Hint: generate coverage first") {
+		t.Errorf("stderr missing coverage hint: %q", errOut.String())
+	}
 	if !strings.Contains(out.String(), "N/A") {
 		t.Errorf("stdout should show N/A: %q", out.String())
 	}

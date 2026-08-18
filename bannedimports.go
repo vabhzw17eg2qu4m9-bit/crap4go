@@ -8,6 +8,7 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"sync"
 )
 
 // ImportRule is one architectural boundary from crap4dart's
@@ -186,11 +187,23 @@ func importMatches(forbid, path, module string) bool {
 	return resolved != "" && globMatch(forbid, resolved)
 }
 
+// globRegexes caches compiled glob patterns once per pattern instead of once
+// per matched file (ported from crap4dart 0.8.6).
+var globRegexes sync.Map // pattern -> *regexp.Regexp (nil when invalid)
+
 // globMatch reports whether name matches a glob pattern supporting '*', '?'
 // and '**' (matching across path separators).
 func globMatch(pattern, name string) bool {
+	if v, ok := globRegexes.Load(pattern); ok {
+		re := v.(*regexp.Regexp)
+		return re != nil && re.MatchString(name)
+	}
 	re, err := regexp.Compile(globToRegex(pattern))
-	return err == nil && re.MatchString(name)
+	if err != nil {
+		re = nil
+	}
+	globRegexes.Store(pattern, re)
+	return re != nil && re.MatchString(name)
 }
 
 // globToRegex translates a glob pattern into an anchored regular
