@@ -71,24 +71,38 @@ func CheckMagicConstants(files []string, root string) ([]MagicConstantsViolation
 }
 
 // literalSites holds, for one file, the lines of hex color literals, the
-// occurrence lines per literal value, and the const-initializer lines that
-// are hex-exempt.
+// occurrence lines per literal value, the lines holding string literals in
+// identifier position (map keys, index expressions, case labels), and the
+// const-initializer lines that are exempt.
 type literalSites struct {
-	hexLines      []int
-	valueLines    map[string][]int
-	constantLines map[int]bool
+	hexLines        []int
+	valueLines      map[string][]int
+	constantLines   map[int]bool
+	identifierLines map[int]bool
 }
 
 // collectLiterals walks file once, recording literal sites and marking
-// const-initializer lines (upstream marks the initializer's own line plus
-// the lines of a direct call initializer's arguments).
+// const-initializer lines (every literal line inside a const initializer's
+// full subtree) and identifier-position lines (direct string-literal map
+// keys, index operands and case labels are protocol identifiers, not
+// magic constants).
 func collectLiterals(file *ast.File, fset *token.FileSet) *literalSites {
-	sites := &literalSites{valueLines: map[string][]int{}, constantLines: map[int]bool{}}
+	sites := &literalSites{
+		valueLines:      map[string][]int{},
+		constantLines:   map[int]bool{},
+		identifierLines: map[int]bool{},
+	}
 	ast.Inspect(file, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.GenDecl:
-			if n.Tok == token.CONST {
-				markConstantLines(n, fset, sites.constantLines)
+			markConstantLines(n, fset, sites.constantLines)
+		case *ast.KeyValueExpr:
+			sites.markIdentifier(n.Key, fset)
+		case *ast.IndexExpr:
+			sites.markIdentifier(n.Index, fset)
+		case *ast.CaseClause:
+			for _, e := range n.List {
+				sites.markIdentifier(e, fset)
 			}
 		case *ast.BasicLit:
 			sites.record(n, fset)
@@ -98,32 +112,51 @@ func collectLiterals(file *ast.File, fset *token.FileSet) *literalSites {
 	return sites
 }
 
-// markConstantLines marks the start line of every value in a const
-// declaration plus the start lines of a direct call's arguments.
+// markIdentifier marks the line of a direct string-literal key, index
+// operand or case label as identifier position (ported from crap4dart
+// 0.7.2/0.8.3 and follow-ups).
+func (s *literalSites) markIdentifier(expr ast.Expr, fset *token.FileSet) {
+	if lit, ok := expr.(*ast.BasicLit); ok && lit.Kind == token.STRING {
+		s.identifierLines[fset.Position(lit.Pos()).Line] = true
+	}
+}
+
+// markConstantLines marks the line of every literal anywhere inside the
+// initializers of a const declaration's full subtree — nested calls,
+// composite literals, binary expressions: everything inside a const
+// declaration is a named constant already (ported from crap4dart
+// 0.8.4/0.8.6). Non-const declarations mark nothing.
 func markConstantLines(decl *ast.GenDecl, fset *token.FileSet, lines map[int]bool) {
+	if decl.Tok != token.CONST {
+		return
+	}
 	for _, spec := range decl.Specs {
 		vs, ok := spec.(*ast.ValueSpec)
 		if !ok {
 			continue
 		}
 		for _, value := range vs.Values {
-			lines[fset.Position(value.Pos()).Line] = true
-			if call, ok := value.(*ast.CallExpr); ok {
-				for _, arg := range call.Args {
-					lines[fset.Position(arg.Pos()).Line] = true
+			ast.Inspect(value, func(n ast.Node) bool {
+				if lit, ok := n.(*ast.BasicLit); ok {
+					lines[fset.Position(lit.Pos()).Line] = true
 				}
-			}
+				return true
+			})
 		}
 	}
 }
 
 // record notes one basic literal's line: integer lexemes matching hexColorRE
 // become hex candidates, and every string/numeric value at least
-// minLiteralLength long becomes a repeat candidate.
+// minLiteralLength long becomes a repeat candidate. String literals in
+// identifier position are never repeat candidates.
 func (s *literalSites) record(lit *ast.BasicLit, fset *token.FileSet) {
 	line := fset.Position(lit.Pos()).Line
 	if lit.Kind == token.INT && hexColorRE.MatchString(lit.Value) {
 		s.hexLines = append(s.hexLines, line)
+	}
+	if lit.Kind == token.STRING && s.identifierLines[line] {
+		return
 	}
 	if value, ok := literalValue(lit); ok && len(value) >= minLiteralLength {
 		s.valueLines[value] = append(s.valueLines[value], line)
@@ -148,8 +181,8 @@ func literalValue(lit *ast.BasicLit) (string, bool) {
 
 // literalViolations turns one file's collected sites into violations: hex
 // colors on non-constant lines first, then every occurrence of a value
-// repeating at least minLiteralRepeats times (values visited in sorted order
-// for deterministic output).
+// repeating at least minLiteralRepeats times among its non-constant-line
+// occurrences (values visited in sorted order for deterministic output).
 func literalViolations(s *literalSites, path string) []MagicConstantsViolation {
 	var violations []MagicConstantsViolation
 	for _, line := range s.hexLines {
@@ -161,7 +194,7 @@ func literalViolations(s *literalSites, path string) []MagicConstantsViolation {
 		}
 	}
 	for _, value := range sortedKeys(s.valueLines) {
-		lines := s.valueLines[value]
+		lines := nonConstantLines(s.valueLines[value], s.constantLines)
 		if len(lines) < minLiteralRepeats {
 			continue
 		}
@@ -173,6 +206,19 @@ func literalViolations(s *literalSites, path string) []MagicConstantsViolation {
 		}
 	}
 	return violations
+}
+
+// nonConstantLines drops the occurrences on const-declaration lines:
+// literals inside const declarations are named constants already and do
+// not count towards the repeat minimum (ported from crap4dart 0.8.4).
+func nonConstantLines(lines []int, constantLines map[int]bool) []int {
+	var kept []int
+	for _, line := range lines {
+		if !constantLines[line] {
+			kept = append(kept, line)
+		}
+	}
+	return kept
 }
 
 // sortedKeys returns m's keys in sorted order.

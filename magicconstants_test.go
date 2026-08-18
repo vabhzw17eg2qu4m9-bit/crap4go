@@ -72,6 +72,80 @@ func calc(n int) int {
 }
 `
 
+// mapKeyAndIndexStrings repeats one string as a map-literal key and as an
+// index operand — protocol identifiers, not magic constants (0.7.2/0.8.3).
+const mapKeyAndIndexStrings = `package p
+
+func cfg() int {
+	m := map[string]int{"user/profile": 1}
+	v, ok := m["user/profile"]
+	if !ok {
+		return 0
+	}
+	return v
+}
+`
+
+// switchCaseLabels repeats one string three times, always as a case label —
+// case labels match protocol values, not constants.
+const switchCaseLabels = `package p
+
+func kind(s string) string {
+	switch s {
+	case "alpha":
+		return "one"
+	}
+	switch s {
+	case "alpha":
+		return "two"
+	}
+	switch s {
+	case "alpha":
+		return "three"
+	}
+	return ""
+}
+`
+
+// constLinesExemptFromDuplicates repeats a string twice in code plus once
+// on a const line: const occurrences no longer count towards the minimum
+// (0.8.4), so the value stays below the threshold.
+const constLinesExemptFromDuplicates = `package p
+
+const prefix = "user/profile"
+
+func p1() string { return "user/profile" }
+
+func p2() string { return "user/profile" }
+`
+
+// constSubtreeHex puts hex colors inside a multi-line const initializer
+// with a nested call: the full initializer subtree is const-exempt (0.8.6).
+const constSubtreeHex = `package p
+
+const nested = blend(
+	0xFF00AA,
+	shadow(0x00AAFF),
+)
+
+func blend(a, b uint32) uint32 { return a ^ b }
+
+func shadow(c uint32) uint32 { return c }
+`
+
+// repeatedWithConstExtra repeats a string three times in code plus once on
+// a const line: the count reflects only the non-const occurrences.
+const repeatedWithConstExtra = `package p
+
+const prefix = "user/profile"
+
+func p1() string { return "user/profile" }
+
+func p2() string { return "user/profile" }
+
+func p3() string { return "user/profile" }
+`
+
 func TestCheckMagicConstants(t *testing.T) {
 	tests := []struct {
 		name string
@@ -115,6 +189,35 @@ func TestCheckMagicConstants(t *testing.T) {
 			name: "clean file has no violations",
 			src:  cleanFile,
 			want: nil,
+		},
+		{
+			name: "map keys and index operands skipped",
+			src:  mapKeyAndIndexStrings,
+			want: nil,
+		},
+		{
+			name: "switch case labels skipped",
+			src:  switchCaseLabels,
+			want: nil,
+		},
+		{
+			name: "const-line occurrences do not count towards repeats",
+			src:  constLinesExemptFromDuplicates,
+			want: nil,
+		},
+		{
+			name: "hex in nested const-initializer subtree exempt",
+			src:  constSubtreeHex,
+			want: nil,
+		},
+		{
+			name: "repeats counted after const filtering",
+			src:  repeatedWithConstExtra,
+			want: []string{
+				"5:literal user/profile repeats 3 times — extract a named constant",
+				"7:literal user/profile repeats 3 times — extract a named constant",
+				"9:literal user/profile repeats 3 times — extract a named constant",
+			},
 		},
 	}
 	for _, tt := range tests {

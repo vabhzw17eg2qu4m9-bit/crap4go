@@ -41,6 +41,8 @@ crap4go unused-files [paths...]  Flag packages never imported; exit 2
 crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
                                  Flag banned imports per from/forbid rule; exit 2
 crap4go magic-constants [paths...] Flag magic literals; exit 2 on violations
+crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
+crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
 crap4go skill                    Print the crap4go profiling skill for AI agents
 ```
 
@@ -49,8 +51,8 @@ combined). Unknown flags are usage errors.
 
 **Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
-`banned-imports`, `magic-constants`) are dispatched on the first argument
-only, and only on an
+`banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`)
+are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
 
@@ -95,7 +97,9 @@ every cover block whose `[blockStart, blockEnd]` intersects the method range:
 `covered = Σ NumStmt where Count > 0`, `total = Σ NumStmt`. Coverage is the
 ratio `covered/total`. If no block intersects, coverage (and CRAP) are `null`
 for that method. If the profile file is missing, a warning is printed to
-stderr and coverage is `null` for every method.
+stderr — with a hint naming the coverage generation command
+(`go test ./... -coverprofile=coverage.out -covermode=atomic`, or
+`--run-tests`) — and coverage is `null` for every method.
 
 ## 6. Go parsing
 
@@ -174,16 +178,30 @@ runs against the copy (`-count=1` bypasses Go's test cache, which would
 otherwise skip the instrumented binaries); the temp directory is cleaned up
 automatically after the run (kept when `CRAP_PROFILE_DEBUG` is set).
 
-Test selection: `--name` is forwarded to `go test -run`; positional paths are
-forwarded verbatim; without paths, `./...` runs. `--top` (default 20) limits
-the console table; `--threshold <ms>` (default off) makes the command exit 2
-when any method's total time exceeds it.
+Test selection: `--name` is forwarded to `go test -run`; positional paths
+are forwarded remapped into the instrumented copy (project-relative paths
+stay unchanged and resolve inside the copy, which is `go test`'s working
+directory; absolute paths under the original project root become
+`./<rel>` — otherwise `go test` would run the original, non-instrumented
+files and produce empty reports, ported from crap4dart 0.9); without
+paths, `./...` runs. `--top` (default 20) limits the console table;
+`--threshold <ms>` (default off) makes the command exit 2 when any
+method's total time exceeds it.
 
-Method attribution: timing data is matched to the project's method inventory
-(same parsing as analyze, keyed by relative file path plus method name).
-Timing entries that do not match a project method are ignored. Test files
-(`*_test.go`) are not instrumented; unparseable files (e.g. `testdata/`
-fixtures) are left unchanged.
+Method attribution: timing data is matched to the project's FULL method
+inventory — the whole configured source set, not just the selected paths
+(timings come from all instrumented methods; keyed by relative file path
+plus method name, same parsing as analyze). Timing entries that do not
+match a project method are ignored. Test files (`*_test.go`) are not
+instrumented; unparseable files (e.g. `testdata/` fixtures) are left
+unchanged.
+
+The collector logs every call immediately to a per-process file (one per
+test binary / pid, appends serialized by a mutex), so the upstream
+0.9.2 isolate-collision fixes (per-worker temp-file identity around the
+atomic rename, reader retry) do not apply — there is no temp-file/rename
+dance and no buffering whose flush cadence could lose records; the logs
+are read after the test run finishes.
 
 ### Profile Report
 
@@ -195,7 +213,10 @@ TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE
 
 - **total time** — total execution time across all calls
 - **calls** — number of invocations
-- **mean time** — average time per call
+- **mean time** — average time per call; sub-30µs means are marked with
+  `~` — the defer-based instrumentation costs on the order of a
+  microsecond per call, so such means are mostly profiler noise; read the
+  CALLS and TOTAL deltas instead (ported from crap4dart 0.9.2)
 - **max time** — slowest single call
 - **@60fps** — estimated cost when called 60× per second (mean × 60, in
   milliseconds), highlighting methods that are cheap per-call but costly on
@@ -225,7 +246,7 @@ Output: one line per violation (`<relative path>: <message>`), then a
 summary — `N/M files with mechanical names` or `M files have
 domain-meaningful names`. Exit code 2 iff there are violations.
 
-### Gate subcommands (ported from crap4dart 0.5.x and 0.6.0)
+### Gate subcommands (ported from crap4dart 0.5.x–0.9.2)
 
 crap4dart 0.5.0 introduced a quality-gate framework (severity, ignorable,
 `crap:ignore` comments, per-gate `entries` overrides, baselines, yaml
@@ -234,10 +255,18 @@ subcommand dispatched like `file-naming`, with upstream default thresholds
 hard-coded and violations always failing (exit 2) — severity/ignorable/
 entries/baseline do not apply. Gate checks 11.5–11.10 of the crap4dart
 spec are ported with Go adaptations as described below; `magic-constants`
-comes from 0.6.0 (§11.13). Not applicable upstream changes: 0.5.2's
-profile part-of fix is Dart-only; 0.6.0's baseline/severity/config knobs
-have no counterpart (no gate framework); 0.6.1's internal constants
-refactor changes no behavior.
+comes from 0.6.0 (§11.13) with the 0.7–0.9 precision fixes, and
+`test-assertions` (§11.15) and `folder-structure` (§11.16) from 0.9.
+Not applicable upstream changes: 0.5.2's profile part-of fix is Dart-only;
+0.6.0's baseline/severity/config knobs have no counterpart (no gate
+framework); 0.6.1's internal constants refactor changes no behavior;
+0.7.1's export-directive edges do not apply to `unused-files` — Go has no
+re-export concept (an import names the implementing package directly);
+0.9's broken-goldens/tofu/goldens-guard command (Flutter PNG goldens), the
+external Checkstyle-XML gate (gate-framework config), run_tests-by-default
+(breaking; the port's pre-commit hook runs the bare tool on staged files —
+a full test suite per commit is unacceptable), and the pixel-detector
+tuning commits are Flutter/gate-framework features with no Go counterpart.
 
 ## 11. `nesting`
 
@@ -295,9 +324,11 @@ Flags unexported package-level declarations — functions (methods
 excluded), types, vars, consts — whose identifier never appears elsewhere
 in the same package. References are counted lexically on unresolved ASTs
 (all identifier occurrences, declaration included; a declaration is
-unused when its identifier occurs exactly once). Non-test files only,
-for both declarations and references (upstream `unused_code` gate
-semantics). Output: one line per violation
+unused when its identifier occurs exactly once). Declaring a private
+declaration never removes its name from the reference set, so cross-class
+same-package private access counts (crap4dart 0.7.1 regression covered).
+Non-test files only, for both declarations and references (upstream
+`unused_code` gate semantics). Output: one line per violation
 (`<relative path>:<line>: <name> is never referenced`) plus a summary.
 Exit code 2 iff violations.
 
@@ -324,6 +355,10 @@ a summary. Exit code 2 iff violations.
 `unused-files: not meaningful for a partial selection` and exits 0
 (ported from crap4dart 0.5.1).
 
+**Re-exports:** crap4dart 0.7.1 counts `export` directives toward the
+import graph; Go has no re-export concept (an import names the
+implementing package directory directly), so nothing extra applies.
+
 ## 16. `banned-imports`
 
 ```
@@ -338,7 +373,9 @@ glob — matched against the raw import path and, for imports inside the
 module, its project-relative package directory — is a violation
 (`<relative path>:<line>: import "<path>" is banned for <file> — <message>`).
 Globs support `*`, `?` and `**` (across separators); a leading `**/` and
-trailing `/**` also match zero directories. With no rules the command
+trailing `/**` also match zero directories; glob patterns are compiled to
+regex once per pattern and cached, not per matched file (0.8.6 perf
+port). With no rules the command
 prints `no rules configured` and exits 0; `--from` without `--forbid`
 (or more `--message` values than rules) is a usage error (exit 1).
 Exit code 2 iff violations.
@@ -349,26 +386,75 @@ Exit code 2 iff violations.
 crap4go magic-constants [paths...]
 ```
 
-Go adaptation of crap4dart 0.6.0's `magic_constants` gate. Two checks:
-(a) integer literals whose lexeme matches `^0[xX][0-9a-fA-F]{6,8}$`
-(`0xRRGGBB` / `0xAARRGGBB`) outside named constant declarations — the
-start line of every value in a `const` spec plus the start lines of a
-direct call initializer's arguments are exempt; (b) numeric (int/float,
-by raw lexeme) and string (unquoted value) literals whose value repeats
-at least 3 times in one file — every occurrence is reported. Values
-shorter than 4 characters are ignored; char and imaginary literals have
-no upstream counterpart and never count. Output: one line per violation
+Go adaptation of crap4dart's `magic_constants` gate (0.6.0, with the
+0.7.2/0.8.3/0.8.4/0.8.6 precision fixes). Two checks:
+
+- **Hex colors:** integer literals whose lexeme matches
+  `^0[xX][0-9a-fA-F]{6,8}$` (`0xRRGGBB` / `0xAARRGGBB`) outside named
+  constant declarations. Exempt: the line of every literal anywhere
+  inside a `const` initializer's full subtree — nested calls, composite
+  literals, binary expressions included (everything inside a const
+  declaration is a named constant already).
+- **Duplicates:** numeric (int/float, by raw lexeme) and string
+  (unquoted value) literals whose value repeats at least 3 times in one
+  file among its non-const-line occurrences — every such occurrence is
+  reported with the filtered count. Occurrences on const lines do not
+  count towards the minimum.
+
+String literals in identifier position are never duplicate candidates
+(protocol identifiers, not magic constants): direct map-literal keys
+(`map[string]int{"k": 1}`), index operands (`obj["key"]`), and switch case
+labels (`case "key":`). Values shorter than 4 characters are ignored;
+char and imaginary literals have no upstream counterpart and never count.
+Output: one line per violation
 (`<relative path>:<line>: hex color outside a constant declaration` or
 `<relative path>:<line>: literal <value> repeats N times — extract a named
 constant`) plus a summary. Exit code 2 iff violations.
 
-## 18. `skill`
+## 18. `test-assertions`
+
+```
+crap4go test-assertions [paths...]
+```
+
+Go adaptation of crap4dart 0.9's `test_assertions` gate (min 1 assertion
+per test): flags `Test*` functions in `*_test.go` files whose bodies
+contain neither a fail-capable `*testing.T` method call nor a `panic()`
+call — a Go test that cannot fail is vacuous ("a test without assertions
+verifies nothing"). Counted calls: `Error`, `Errorf`, `Fatal`, `Fatalf`,
+`Fail`, `FailNow` invoked through any identifier bound to a `*testing.T`
+parameter — the test function's own parameter or a nested func literal's
+(`t.Run` subtests) — plus bare `panic()` calls. `TestMain` (the harness
+entry point), benchmarks, and fuzz functions are not tests and never
+count. Selection: `*_test.go` files under the positional paths
+(directories walked, non-test files dropped) or, without paths, the whole
+root; `vendor/` trees are excluded. Output: one line per violation
+(`<relative path>:<line>: TestFoo has 0 assertion(s) — a test without
+assertions verifies nothing`) plus a summary. Exit code 2 iff violations.
+
+## 19. `folder-structure`
+
+```
+crap4go folder-structure [dirs...]
+```
+
+Go adaptation of crap4dart 0.9's `folder_structure` gate (max 0 loose
+files): flags directories containing more than 0 non-test `.go` files
+directly (non-recursive) — a flat-file sprawl that should be organized
+into feature packages. Default directory: the module root (`.`) — the
+port's default source root; positional args select other directories
+(resolved against the root; a non-directory arg is a usage error).
+Output: one line per violation
+(`<dir>: N loose .go files directly in <dir> — group them into feature
+packages (max 0)`) plus a summary. Exit code 2 iff violations.
+
+## 20. `skill`
 
 Prints a Go-adapted version of crap4dart's profiling skill (when to profile,
 how the instrumentation works, how to read the report), ending with one line
 on installing it as an agent skill. Always exits 0.
 
-## 19. Threshold
+## 21. Threshold
 
 The threshold defaults to `8.0` and is overridable with `--threshold`. After
 the report is printed, the maximum numeric CRAP is compared against it; if
@@ -376,7 +462,7 @@ the report is printed, the maximum numeric CRAP is compared against it; if
 to stderr and the process exits 2. Otherwise the process exits 0. A threshold
 of `0` or less is a usage error.
 
-## 20. Exit codes
+## 22. Exit codes
 
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
@@ -385,15 +471,16 @@ of `0` or less is a usage error.
 | `2`  | Max numeric CRAP exceeded the threshold; `profile` total exceeded        |
 |      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
-|      | `banned-imports`, `magic-constants`). (Also reported on stderr.)         |
+|      | `banned-imports`, `magic-constants`, `test-assertions`,                  |
+|      | `folder-structure`). (Also reported on stderr.)                          |
 
-## 21. `--run-tests`
+## 23. `--run-tests`
 
 Runs `go test ./... -coverprofile=coverage.out -covermode=atomic` in the
 project root, streaming stdout/stderr through. On non-zero exit, the error is
 printed to stderr and the process exits 1.
 
-## 22. Non-goals
+## 24. Non-goals
 
 - No type-checking or build verification — parsing only.
 - No HTML/branch coverage reports — only the statement-level cover profile.

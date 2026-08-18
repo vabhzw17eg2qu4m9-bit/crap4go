@@ -68,6 +68,9 @@ original (non-instrumented) source. Look for: high TOTAL + high CALLS (called
 too often — cache it), high MEAN (expensive call — algorithm issue), high
 @60fps (costly on any per-request path).
 
+MEAN values marked with ~ are under 30µs — instrumentation overhead
+dominates there, so read the CALLS and TOTAL deltas instead.
+
 ## How It Works
 
 1. Copies the module to .crap_profile_temp/

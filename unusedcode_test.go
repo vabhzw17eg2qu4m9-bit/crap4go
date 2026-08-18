@@ -62,6 +62,24 @@ func TestRun_UnusedCodeReferenceInSamePackage(t *testing.T) {
 	}
 }
 
+// TestRun_UnusedCodeCrossClassPrivateAccess is the 0.7.1 regression: a
+// private declaration referenced from a method on another type (here, in a
+// different file of the same package) must not be flagged — declaring a
+// private declaration must not strip its name from the reference set.
+func TestRun_UnusedCodeCrossClassPrivateAccess(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root+"/calc.go", "package p\n\nfunc calc(n int) int { return n * 2 }\n")
+	writeFile(t, root+"/widget.go", "package p\n\ntype widget struct{}\n\nfunc (w widget) Render() int { return calc(21) }\n")
+	var out, errOut bytes.Buffer
+	code := runWithRoot([]string{"unused-code"}, root, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (stderr=%s)", code, errOut.String())
+	}
+	if strings.Contains(out.String(), "calc is never referenced") {
+		t.Errorf("cross-class private access flagged:\n%s", out.String())
+	}
+}
+
 func TestRun_UnusedCodeSkipsPartialSelection(t *testing.T) {
 	root := t.TempDir()
 	writeFile(t, root+"/decl.go", unusedCodeFixture)

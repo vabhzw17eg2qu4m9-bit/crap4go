@@ -32,6 +32,8 @@ Subcommands (must be the first argument):
   crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
                                    Flag banned imports per from/forbid rule; exit 2
   crap4go magic-constants [paths...] Flag magic literals (hex colors, repeats); exit 2
+  crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
+  crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -108,10 +110,13 @@ func resolveCoveragePath(path, root string) string {
 	return filepath.Join(root, path)
 }
 
-// warnIfCoverageMissing writes a warning when the coverage file is absent.
+// warnIfCoverageMissing writes a warning when the coverage file is absent,
+// with a hint naming the port's own coverage generation command (ported
+// from crap4dart 0.8.7).
 func warnIfCoverageMissing(resolved, display string, stderr io.Writer) {
 	if _, err := os.Stat(resolved); os.IsNotExist(err) {
 		fmt.Fprintf(stderr, "Warning: coverage file %s not found. Coverage will be N/A.\n", display)
+		fmt.Fprintln(stderr, "Hint: generate coverage first — `go test ./... -coverprofile=coverage.out -covermode=atomic`, or pass --run-tests to do it automatically.")
 	}
 }
 
@@ -130,14 +135,16 @@ func runWithRoot(args []string, root string, stdout, stderr io.Writer) int {
 // subcommands maps gate subcommand names to their runners; all share the
 // (args, root, stdout, stderr) signature and return the exit code.
 var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
-	"file-naming":     RunFileNamingCommand,
-	"nesting":         RunNestingCommand,
-	"class-size":      RunClassSizeCommand,
-	"weight-of-class": RunWeightOfClassCommand,
-	"unused-code":     RunUnusedCodeCommand,
-	"unused-files":    RunUnusedFilesCommand,
-	"banned-imports":  RunBannedImportsCommand,
-	"magic-constants": RunMagicConstantsCommand,
+	"file-naming":      RunFileNamingCommand,
+	"nesting":          RunNestingCommand,
+	"class-size":       RunClassSizeCommand,
+	"weight-of-class":  RunWeightOfClassCommand,
+	"unused-code":      RunUnusedCodeCommand,
+	"unused-files":     RunUnusedFilesCommand,
+	"banned-imports":   RunBannedImportsCommand,
+	"magic-constants":  RunMagicConstantsCommand,
+	"test-assertions":  RunTestAssertionsCommand,
+	"folder-structure": RunFolderStructureCommand,
 }
 
 // runSubcommand executes a subcommand when args[0] exactly matches a known
