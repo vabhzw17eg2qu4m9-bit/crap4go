@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.5.0...v0.5.1) (2026-08-21)
+
+
+### Bug Fixes
+
+* port crap4dart 0.9.3/0.9.4 profile and test-assertions fixes ([#16](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/16)) ([6c9983c](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/6c9983c08e24e40d30a77e93c04e4c700a7f7220))
+
 ## [0.5.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.4.0...v0.5.0) (2026-08-18)
 
 
