@@ -284,20 +284,26 @@ func writeCollectors(collectors map[string]string) error {
 
 // runInstrumentedTests runs `go test -count=1` in dir with the collector
 // output directory in the environment. -count=1 bypasses Go's test cache,
-// which would otherwise skip running the instrumented binaries. Positional
-// paths are remapped from the original project root into the instrumented
-// copy; without paths the whole module (./...) runs.
+// which would otherwise skip running the instrumented binaries.
 func runInstrumentedTests(root, dir, outDir string, opts profileOptions, stdout, stderr io.Writer) error {
+	return runGoTests(dir, profileTestArgs(root, opts), append(os.Environ(), "CRAP_PROFILE_DIR="+outDir), stdout, stderr)
+}
+
+// profileTestArgs builds the `go test` argv. Explicit paths (remapped into
+// the instrumented copy) are passed exclusively; the ./... default runs only
+// when no paths are given — appending the default alongside explicit paths
+// would profile the whole module in addition to the requested files (the
+// upstream 0.9.3 bug shape; the port never had it, verified by
+// TestProfileTestArgs).
+func profileTestArgs(root string, opts profileOptions) []string {
 	args := []string{"test", "-count=1"}
 	if opts.name != "" {
 		args = append(args, "-run", opts.name)
 	}
 	if len(opts.paths) > 0 {
-		args = append(args, remapProfilePaths(root, opts.paths)...)
-	} else {
-		args = append(args, "./...")
+		return append(args, remapProfilePaths(root, opts.paths)...)
 	}
-	return runGoTests(dir, args, append(os.Environ(), "CRAP_PROFILE_DIR="+outDir), stdout, stderr)
+	return append(args, "./...")
 }
 
 // remapProfilePaths remaps explicit test paths into the instrumented temp
