@@ -183,8 +183,13 @@ are forwarded remapped into the instrumented copy (project-relative paths
 stay unchanged and resolve inside the copy, which is `go test`'s working
 directory; absolute paths under the original project root become
 `./<rel>` — otherwise `go test` would run the original, non-instrumented
-files and produce empty reports, ported from crap4dart 0.9); without
-paths, `./...` runs. `--top` (default 20) limits the console table;
+files and produce empty reports, ported from crap4dart 0.9). Without
+paths, `./...` runs. Explicit paths are passed exclusively — the default
+`./...` selector is appended only when no paths are given (upstream 0.9.3
+fixed this shape in crap4dart, where the default `test` directory selector
+was appended unconditionally and explicit paths profiled the whole suite
+in addition; the Go port never had the bug, verified by
+`TestProfileTestArgs`). `--top` (default 20) limits the console table;
 `--threshold <ms>` (default off) makes the command exit 2 when any
 method's total time exceeds it.
 
@@ -421,12 +426,19 @@ Go adaptation of crap4dart 0.9's `test_assertions` gate (min 1 assertion
 per test): flags `Test*` functions in `*_test.go` files whose bodies
 contain neither a fail-capable `*testing.T` method call nor a `panic()`
 call — a Go test that cannot fail is vacuous ("a test without assertions
-verifies nothing"). Counted calls: `Error`, `Errorf`, `Fatal`, `Fatalf`,
+assertions verifies nothing"). Counted calls: `Error`, `Errorf`, `Fatal`, `Fatalf`,
 `Fail`, `FailNow` invoked through any identifier bound to a `*testing.T`
 parameter — the test function's own parameter or a nested func literal's
 (`t.Run` subtests) — plus bare `panic()` calls. `TestMain` (the harness
 entry point), benchmarks, and fuzz functions are not tests and never
-count. Selection: `*_test.go` files under the positional paths
+count. Upstream 0.9.4 fixed the body being picked as the `test(...)`
+call's LAST argument, so trailing named args (`skip:`, `timeout:`) hid it
+and caused false "0 assertions"; N/A in Go — test functions are
+declarations with the compiler-enforced `func TestXxx(t *testing.T)`
+signature, there is no call-site argument list to pick a body from, and
+the gate reads the `FuncDecl` body directly (`t.Run` subtest bodies are
+nested func literals and cannot be hidden either; covered by the subtest
+case in `testassertions_test.go`). Selection: `*_test.go` files under the positional paths
 (directories walked, non-test files dropped) or, without paths, the whole
 root; `vendor/` trees are excluded. Output: one line per violation
 (`<relative path>:<line>: TestFoo has 0 assertion(s) — a test without

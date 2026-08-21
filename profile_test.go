@@ -307,6 +307,26 @@ func TestRemapProfilePaths(t *testing.T) {
 	}
 }
 
+// TestProfileTestArgs is the 0.9.3 regression: explicit paths must be passed
+// exclusively — a ./... default alongside them would profile the whole module
+// in addition to the requested files. ./... may appear only when no paths are
+// given.
+func TestProfileTestArgs(t *testing.T) {
+	root := t.TempDir()
+
+	explicit := profileTestArgs(root, profileOptions{name: "TestFoo", paths: []string{"./pkg/a_test.go", "./b_test.go"}})
+	wantExplicit := []string{"test", "-count=1", "-run", "TestFoo", "./pkg/a_test.go", "./b_test.go"}
+	if fmt.Sprint(explicit) != fmt.Sprint(wantExplicit) {
+		t.Errorf("explicit-paths argv = %v, want %v", explicit, wantExplicit)
+	}
+
+	noPaths := profileTestArgs(root, profileOptions{})
+	wantDefault := []string{"test", "-count=1", "./..."}
+	if fmt.Sprint(noPaths) != fmt.Sprint(wantDefault) {
+		t.Errorf("no-paths argv = %v, want %v", noPaths, wantDefault)
+	}
+}
+
 func TestFormatProfileReportMeanCaveat(t *testing.T) {
 	profiles := []methodProfile{
 		{Method: MethodDescriptor{Name: "Fastish"}, File: "a.go", Timing: timingStats{Calls: 100, TotalMicros: 1000, MinMicros: 10, MaxMicros: 10}},
