@@ -19,7 +19,7 @@ func TestRun_Skill(t *testing.T) {
 		"## Reading the Report",
 		"## How It Works",
 		"go test",
-		"TOTAL(ms)",
+		"SELF",
 		"Install as an agent skill",
 		"crap4go skill > .agents/skills/crap4go-profiling/SKILL.md",
 	} {

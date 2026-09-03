@@ -19,10 +19,11 @@ import (
 // timingStats is the per-method timing aggregate collected by the generated
 // collector and merged host-side.
 type timingStats struct {
-	Calls       int64 `json:"calls"`
-	TotalMicros int64 `json:"totalMicros"`
-	MinMicros   int64 `json:"minMicros"`
-	MaxMicros   int64 `json:"maxMicros"`
+	Calls           int64 `json:"calls"`
+	TotalMicros     int64 `json:"totalMicros"`
+	TotalSelfMicros int64 `json:"totalSelfMicros"`
+	MinMicros       int64 `json:"minMicros"`
+	MaxMicros       int64 `json:"maxMicros"`
 }
 
 // MeanMicros returns the average time per call in microseconds.
@@ -78,10 +79,11 @@ func parseProfileOptions(args []string, stderr io.Writer) (profileOptions, int, 
 }
 
 // RunProfileCommand implements `crap4go profile`: it copies the module to a
-// temp dir, instruments every function body with a defer-based timer, runs
-// `go test` against the copy, prints the timing table, writes full reports to
-// profile-reports/, and cleans up. Returns exit code 2 when --threshold is
-// set and any method's total exceeds it.
+// temp dir, instruments every function body with an enter/exit pair reported
+// to a generated collector, runs `go test` against the copy, prints the
+// timing table, writes full reports to profile-reports/, and cleans up.
+// Returns exit code 2 when --threshold is set and any method's total
+// exceeds it.
 func RunProfileCommand(args []string, root string, stdout, stderr io.Writer) int {
 	opts, code, ok := parseProfileOptions(args, stderr)
 	if !ok {
@@ -215,8 +217,11 @@ func instrumentFile(path, root string, collectors map[string]string) error {
 }
 
 // instrumentSource wraps every function/method body in src with
-// `defer crap4goRecord("<key>")()` immediately after the opening brace. Keys
-// are "<relPath>|<method name>" using the same naming as ExtractMethods.
+// `crap4goEnter("<key>")` + `defer crap4goExit()` immediately after the
+// opening brace. Keys are "<relPath>|<method name>" using the same naming
+// as ExtractMethods. The deferred exit runs on every return path (panics
+// included) on the registering goroutine, so the collector's per-goroutine
+// frame stacks stay balanced.
 // Returns the (possibly unchanged) source, the package name, whether any
 // function was wrapped, and a parse error if src does not parse.
 func instrumentSource(src []byte, relPath string) ([]byte, string, bool, error) {
@@ -235,7 +240,7 @@ func instrumentSource(src []byte, relPath string) ([]byte, string, bool, error) 
 		offset := fset.Position(fd.Body.Lbrace).Offset + 1
 		insertions = append(insertions, funcInsertion{
 			offset: offset,
-			text:   "\n\tdefer crap4goRecord(" + strconv.Quote(key) + ")()\n",
+			text:   "\n\tcrap4goEnter(" + strconv.Quote(key) + ")\n\tdefer crap4goExit()\n",
 		})
 	}
 	if len(insertions) == 0 {
@@ -244,7 +249,7 @@ func instrumentSource(src []byte, relPath string) ([]byte, string, bool, error) 
 	return applyInsertions(src, insertions), f.Name.Name, true, nil
 }
 
-// funcInsertion is one deferred-timer insertion at a byte offset.
+// funcInsertion is one instrumentation insertion at a byte offset.
 type funcInsertion struct {
 	offset int
 	text   string
@@ -348,28 +353,37 @@ func aggregateTimingFile(path string, stats map[string]*timingStats) {
 		return
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		key, micros, ok := splitTimingLine(line)
+		key, micros, self, ok := splitTimingLine(line)
 		if ok {
-			mergeTiming(stats, key, micros)
+			mergeTiming(stats, key, micros, self)
 		}
 	}
 }
 
-// splitTimingLine parses one "<key>\t<micros>" log line.
-func splitTimingLine(line string) (string, int64, bool) {
+// splitTimingLine parses one "<key>\t<inclusive>\t<self>" log line.
+func splitTimingLine(line string) (string, int64, int64, bool) {
 	key, rest, found := strings.Cut(line, "\t")
 	if !found || key == "" {
-		return "", 0, false
+		return "", 0, 0, false
 	}
-	micros, err := strconv.ParseInt(rest, 10, 64)
+	inclusiveStr, selfStr, found := strings.Cut(rest, "\t")
+	if !found {
+		return "", 0, 0, false
+	}
+	inclusive, err := strconv.ParseInt(inclusiveStr, 10, 64)
 	if err != nil {
-		return "", 0, false
+		return "", 0, 0, false
 	}
-	return key, micros, true
+	self, err := strconv.ParseInt(selfStr, 10, 64)
+	if err != nil {
+		return "", 0, 0, false
+	}
+	return key, inclusive, self, true
 }
 
-// mergeTiming folds one recorded call into the per-key aggregate.
-func mergeTiming(stats map[string]*timingStats, key string, micros int64) {
+// mergeTiming folds one recorded call (inclusive and self time) into the
+// per-key aggregate.
+func mergeTiming(stats map[string]*timingStats, key string, micros, self int64) {
 	s := stats[key]
 	if s == nil {
 		s = &timingStats{MinMicros: micros}
@@ -377,6 +391,7 @@ func mergeTiming(stats map[string]*timingStats, key string, micros int64) {
 	}
 	s.Calls++
 	s.TotalMicros += micros
+	s.TotalSelfMicros += self
 	s.MinMicros = min(s.MinMicros, micros)
 	s.MaxMicros = max(s.MaxMicros, micros)
 }
@@ -438,19 +453,23 @@ func totalMicros(profiles []methodProfile) int64 {
 	return sum
 }
 
-// FormatProfileReport renders the contract table: TOTAL(ms) | % | CALLS |
+// FormatProfileReport renders the contract table: TOTAL | SELF | % | CALLS |
 // MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE, sorted by total
-// descending. top > 0 limits the rows shown; thresholdMs > 0 appends the
-// threshold verdict line.
+// descending. TOTAL is inclusive time, SELF excludes nested instrumented
+// calls; both render with adaptive units. top > 0 limits the rows shown;
+// thresholdMs > 0 appends the threshold verdict line.
 func FormatProfileReport(profiles []methodProfile, top int, thresholdMs float64) string {
 	total := totalMicros(profiles)
 	var b strings.Builder
-	fmt.Fprintf(&b, "Profile Report (%d methods, total %.2fms)\n", len(profiles), float64(total)/1000.0)
-	b.WriteString("TOTAL(ms)     %  CALLS  MEAN(µs)  MAX(µs)  @60fps(ms)  METHOD                     FILE:LINE\n")
-	b.WriteString("------------------------------------------------------------------------------------------\n")
+	fmt.Fprintf(&b, "Profile Report (%d methods, total %s)\n", len(profiles), fmtTotal(float64(total)/1000.0))
+	header := fmt.Sprintf("%9s %9s %6s %6s %9s %8s %10s  %-25s %s",
+		"TOTAL", "SELF", "%", "CALLS", "MEAN(µs)", "MAX(µs)", "@60fps(ms)", "METHOD", "FILE:LINE")
+	b.WriteString(header + "\n")
+	b.WriteString(strings.Repeat("-", len(header)) + "\n")
 	for _, p := range topProfiles(profiles, top) {
-		fmt.Fprintf(&b, "%9.2f %5.1f%% %6d %9s %8d %10.2f  %-25s %s:%d\n",
-			float64(p.Timing.TotalMicros)/1000.0,
+		fmt.Fprintf(&b, "%9s %9s %5.1f%% %6d %9s %8d %10.2f  %-25s %s:%d\n",
+			fmtTotal(float64(p.Timing.TotalMicros)/1000.0),
+			fmtTotal(float64(p.Timing.TotalSelfMicros)/1000.0),
 			shareOfTotal(p.Timing.TotalMicros, total),
 			p.Timing.Calls,
 			formatMeanMicros(p.Timing.MeanMicros()),
@@ -475,7 +494,7 @@ func topProfiles(profiles []methodProfile, top int) []methodProfile {
 }
 
 // formatMeanMicros renders the MEAN column, marking sub-30µs means with ~:
-// the defer-based instrumentation costs on the order of a microsecond per
+// the enter/exit instrumentation costs on the order of a microsecond per
 // call, so such means are mostly noise from the profiler itself — read the
 // CALLS and TOTAL deltas instead (ported from crap4dart 0.9.2).
 func formatMeanMicros(mean float64) string {
@@ -484,6 +503,24 @@ func formatMeanMicros(mean float64) string {
 		return "~" + s
 	}
 	return s
+}
+
+// fmtTotal renders TOTAL/SELF (and the summary-line total) with adaptive
+// units, always two decimals. A fixed two-decimal ms value becomes a wall
+// of digits at extreme call counts (upstream 0.9.5 saw 50000000.00); unit
+// suffixes keep the columns compact at any magnitude
+// (ported from crap4dart 0.9.5).
+func fmtTotal(millis float64) string {
+	switch {
+	case millis < 1000:
+		return fmt.Sprintf("%.2fms", millis)
+	case millis < 60000:
+		return fmt.Sprintf("%.2fs", millis/1000)
+	case millis < 3600000:
+		return fmt.Sprintf("%.2fm", millis/60000)
+	default:
+		return fmt.Sprintf("%.2fh", millis/3600000)
+	}
 }
 
 // shareOfTotal returns the percentage share of total time.
@@ -557,14 +594,15 @@ func writeProfileJSON(path string, profiles []methodProfile) error {
 	methods := make([]profileJSONMethod, len(profiles))
 	for i, p := range profiles {
 		methods[i] = profileJSONMethod{
-			Method:      p.Method.Name,
-			File:        p.File,
-			Line:        p.Method.StartLine,
-			Calls:       p.Timing.Calls,
-			TotalMicros: p.Timing.TotalMicros,
-			MinMicros:   p.Timing.MinMicros,
-			MaxMicros:   p.Timing.MaxMicros,
-			MeanMicros:  p.Timing.MeanMicros(),
+			Method:          p.Method.Name,
+			File:            p.File,
+			Line:            p.Method.StartLine,
+			Calls:           p.Timing.Calls,
+			TotalMicros:     p.Timing.TotalMicros,
+			TotalSelfMicros: p.Timing.TotalSelfMicros,
+			MinMicros:       p.Timing.MinMicros,
+			MaxMicros:       p.Timing.MaxMicros,
+			MeanMicros:      p.Timing.MeanMicros(),
 		}
 	}
 	data, err := json.MarshalIndent(profileJSONReport{
@@ -585,12 +623,13 @@ type profileJSONReport struct {
 
 // profileJSONMethod is one method entry in the JSON profile report.
 type profileJSONMethod struct {
-	Method      string  `json:"method"`
-	File        string  `json:"file"`
-	Line        int     `json:"line"`
-	Calls       int64   `json:"calls"`
-	TotalMicros int64   `json:"totalMicros"`
-	MinMicros   int64   `json:"minMicros"`
-	MaxMicros   int64   `json:"maxMicros"`
-	MeanMicros  float64 `json:"meanMicros"`
+	Method          string  `json:"method"`
+	File            string  `json:"file"`
+	Line            int     `json:"line"`
+	Calls           int64   `json:"calls"`
+	TotalMicros     int64   `json:"totalMicros"`
+	TotalSelfMicros int64   `json:"totalSelfMicros"`
+	MinMicros       int64   `json:"minMicros"`
+	MaxMicros       int64   `json:"maxMicros"`
+	MeanMicros      float64 `json:"meanMicros"`
 }

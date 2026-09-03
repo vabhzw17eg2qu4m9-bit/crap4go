@@ -33,7 +33,7 @@ description: CPU profiling for Go projects using crap4go. Use when the user want
 `,
 	"`crap4go profile`",
 	` is a source-instrumentation profiler. It copies the
-module to a temp dir, wraps every function body with a defer-based timer, runs
+module to a temp dir, wraps every function body with an enter/exit pair, runs
 `,
 	"`go test`",
 	` against the instrumented copy, and reports exact per-function
@@ -56,7 +56,10 @@ Full reports are saved to profile-reports/ (profile-<timestamp>.txt and .json).
 
 | Column       | Meaning                                    |
 |--------------|--------------------------------------------|
-| TOTAL(ms)    | Total time across all calls                |
+| TOTAL        | Inclusive time across all calls (ms/s/m/h) |
+| SELF         | TOTAL minus nested profiled calls — time   |
+|              | in the function's own body (flamegraph     |
+|              | self-time; adaptive units)                 |
 | %            | Share of total profiling time              |
 | CALLS        | Number of invocations                      |
 | MEAN(µs)     | Average time per call                      |
@@ -64,9 +67,8 @@ Full reports are saved to profile-reports/ (profile-<timestamp>.txt and .json).
 | @60fps(ms)   | Cost if called 60× per second (mean × 60)  |
 
 Rows are sorted by TOTAL descending. FILE:LINE points at the function in the
-original (non-instrumented) source. Look for: high TOTAL + high CALLS (called
-too often — cache it), high MEAN (expensive call — algorithm issue), high
-@60fps (costly on any per-request path).
+original (non-instrumented) source. Look for: high SELF + high CALLS (hot code
+burning CPU in its own body — cache it), high MEAN, high @60fps.
 
 MEAN values marked with ~ are under 30µs — instrumentation overhead
 dominates there, so read the CALLS and TOTAL deltas instead.
@@ -75,16 +77,16 @@ dominates there, so read the CALLS and TOTAL deltas instead.
 
 1. Copies the module to .crap_profile_temp/
 2. Every function body gets `,
-	"`defer crap4goRecord(\"file|Func\")()`",
-	` — a defer-based timer that
-   records elapsed µs on exit
-3. A generated collector logs each call to a per-process file
-   (CRAP_PROFILE_DIR); no cross-process locking needed
+	"`crap4goEnter(\"file|Func\")` + `defer crap4goExit()`",
+	` — the collector
+   keeps a per-goroutine call stack so SELF excludes nested profiled calls
+3. A generated collector logs each call (inclusive + self) to a per-process
+   file (CRAP_PROFILE_DIR); no cross-process locking needed
 4. `,
 	"`go test -count=1`",
 	` runs against the copy (test cache bypassed)
-5. Logs are merged into calls/total/min/max per function and attributed to
-   the analyzed method inventory (unmatched entries ignored)
+5. Logs are merged into calls/total/self/min/max per function and
+   attributed to the analyzed method inventory (unmatched entries ignored)
 6. The table is printed, full reports written to profile-reports/
 7. The temp dir is cleaned up (kept when CRAP_PROFILE_DEBUG is set)
 
@@ -92,7 +94,7 @@ dominates there, so read the CALLS and TOTAL deltas instead.
 
 - Test files (*_test.go) are not instrumented — only the code under test
 - Unparseable files (e.g. testdata fixtures) are skipped
-- Profiling adds per-call overhead; sub-microsecond measurements are noise
+- Profiling adds µs-scale per-call overhead; sub-30µs means are flagged ~
 
 ## Install as an agent skill
 

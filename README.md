@@ -79,10 +79,13 @@ crap4go folder-structure           # flag dirs with loose .go files at the modul
 crap4go skill                     # print the profiling skill for AI agents
 ```
 
-`profile` copies the module to a temp dir, wraps every function body with a
-defer-based timer, runs `go test` against the copy, and prints a timing table
-(`TOTAL(ms) % CALLS MEAN(µs) MAX(µs) @60fps(ms) METHOD FILE:LINE`, sorted by
-total descending; sub-30µs means are marked `~` — instrumentation overhead
+`profile` copies the module to a temp dir, wraps every function body with an
+enter/exit pair reported to a generated collector, runs `go test` against the
+copy, and prints a timing table (`TOTAL SELF % CALLS MEAN(µs) MAX(µs)
+@60fps(ms) METHOD FILE:LINE`, sorted by total descending; TOTAL is inclusive
+time and SELF excludes nested profiled calls — flamegraph self-time; TOTAL
+and SELF render with adaptive units `82.50ms` / `13.89s` / `22.50m` /
+`13.89h`; sub-30µs means are marked `~` — instrumentation overhead
 dominates there, so read the CALLS/TOTAL deltas instead). `--top <N>` limits
 the console rows (default 20);
 `--threshold <ms>` exits 2 when any method's total exceeds it. Full reports
