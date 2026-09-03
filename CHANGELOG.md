@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.6.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.5.1...v0.6.0) (2026-09-03)
+
+
+### Features
+
+* port crap4dart 0.9.5 SELF column and adaptive time units ([#18](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/18)) ([ed3cd73](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/ed3cd736815af29184b1a638be83c8451c1ff782))
+
 ## [0.5.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.5.0...v0.5.1) (2026-08-21)
 
 
