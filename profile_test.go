@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/json"
 	"fmt"
 	"go/parser"
 	"go/token"
@@ -38,18 +39,22 @@ func TestInstrumentSource(t *testing.T) {
 	}
 	src := string(out)
 	for _, want := range []string{
-		`defer crap4goRecord("sample.go|Add")()`,
-		`defer crap4goRecord("sample.go|(Calc)Show")()`,
+		`crap4goEnter("sample.go|Add")`,
+		`crap4goEnter("sample.go|(Calc)Show")`,
 	} {
 		if !strings.Contains(src, want) {
 			t.Errorf("instrumented source missing %q:\n%s", want, src)
 		}
 	}
+	// Every wrapped body defers the collector exit.
+	if got := strings.Count(src, "defer crap4goExit()"); got != 3 {
+		t.Errorf("want 3 deferred exits, got %d:\n%s", got, src)
+	}
 	// Empty bodies are wrapped too; bodiless declarations are not.
-	if !strings.Contains(src, `defer crap4goRecord("sample.go|Empty")()`) {
+	if !strings.Contains(src, `crap4goEnter("sample.go|Empty")`) {
 		t.Errorf("empty body not wrapped:\n%s", src)
 	}
-	if strings.Contains(src, "ext") && strings.Count(src, "crap4goRecord") != 3 {
+	if strings.Contains(src, "ext") && strings.Count(src, "crap4goEnter") != 3 {
 		t.Errorf("bodiless decl instrumented:\n%s", src)
 	}
 	// The instrumented source must still parse.
@@ -77,51 +82,54 @@ func TestInstrumentSourceParseError(t *testing.T) {
 
 func TestSplitTimingLine(t *testing.T) {
 	tests := []struct {
-		line   string
-		key    string
-		micros int64
-		ok     bool
+		line         string
+		key          string
+		micros, self int64
+		ok           bool
 	}{
-		{"sample.go|Add\t42", "sample.go|Add", 42, true},
-		{"k\t0", "k", 0, true},
-		{"no-tab", "", 0, false},
-		{"\t5", "", 0, false},
-		{"k\tnotanumber", "", 0, false},
-		{"", "", 0, false},
+		{"sample.go|Add\t42\t40", "sample.go|Add", 42, 40, true},
+		{"k\t0\t0", "k", 0, 0, true},
+		{"no-tab", "", 0, 0, false},
+		{"k\t5", "", 0, 0, false},
+		{"\t5\t5", "", 0, 0, false},
+		{"k\tnotanumber\t5", "", 0, 0, false},
+		{"k\t5\tnotanumber", "", 0, 0, false},
+		{"", "", 0, 0, false},
 	}
 	for _, tt := range tests {
-		key, micros, ok := splitTimingLine(tt.line)
-		if ok != tt.ok || key != tt.key || micros != tt.micros {
-			t.Errorf("splitTimingLine(%q) = (%q,%d,%v), want (%q,%d,%v)",
-				tt.line, key, micros, ok, tt.key, tt.micros, tt.ok)
+		key, micros, self, ok := splitTimingLine(tt.line)
+		if ok != tt.ok || key != tt.key || micros != tt.micros || self != tt.self {
+			t.Errorf("splitTimingLine(%q) = (%q,%d,%d,%v), want (%q,%d,%d,%v)",
+				tt.line, key, micros, self, ok, tt.key, tt.micros, tt.self, tt.ok)
 		}
 	}
 }
 
 func TestMergeTiming(t *testing.T) {
 	stats := map[string]*timingStats{}
-	mergeTiming(stats, "a", 10)
-	mergeTiming(stats, "a", 30)
-	mergeTiming(stats, "b", 5)
+	mergeTiming(stats, "a", 10, 8)
+	mergeTiming(stats, "a", 30, 20)
+	mergeTiming(stats, "b", 5, 5)
 	got := stats["a"]
-	if got.Calls != 2 || got.TotalMicros != 40 || got.MinMicros != 10 || got.MaxMicros != 30 {
+	if got.Calls != 2 || got.TotalMicros != 40 || got.TotalSelfMicros != 28 ||
+		got.MinMicros != 10 || got.MaxMicros != 30 {
 		t.Errorf("merge a = %+v", got)
 	}
-	if got := stats["b"]; got.Calls != 1 || got.MeanMicros() != 5 {
+	if got := stats["b"]; got.Calls != 1 || got.MeanMicros() != 5 || got.TotalSelfMicros != 5 {
 		t.Errorf("merge b = %+v", got)
 	}
 }
 
 func TestReadTimings(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "prof-1.jsonl"), "a\t10\nb\t5\n")
-	writeFile(t, filepath.Join(dir, "prof-2.jsonl"), "a\t20\n")
-	writeFile(t, filepath.Join(dir, "ignore.txt"), "a\t99\n")
+	writeFile(t, filepath.Join(dir, "prof-1.jsonl"), "a\t10\t8\nb\t5\t5\n")
+	writeFile(t, filepath.Join(dir, "prof-2.jsonl"), "a\t20\t15\n")
+	writeFile(t, filepath.Join(dir, "ignore.txt"), "a\t99\t99\n")
 	stats := readTimings(dir)
 	if len(stats) != 2 {
 		t.Fatalf("got %d keys, want 2: %+v", len(stats), stats)
 	}
-	if got := stats["a"]; got.Calls != 2 || got.TotalMicros != 30 || got.MaxMicros != 20 {
+	if got := stats["a"]; got.Calls != 2 || got.TotalMicros != 30 || got.TotalSelfMicros != 23 || got.MaxMicros != 20 {
 		t.Errorf("a = %+v", got)
 	}
 	if got := readTimings(filepath.Join(dir, "missing")); len(got) != 0 {
@@ -132,9 +140,9 @@ func TestReadTimings(t *testing.T) {
 func profileFixture() []methodProfile {
 	return []methodProfile{
 		{Method: MethodDescriptor{Name: "Slow", StartLine: 3}, File: "a.go",
-			Timing: timingStats{Calls: 2, TotalMicros: 3000, MinMicros: 1000, MaxMicros: 2000}},
+			Timing: timingStats{Calls: 2, TotalMicros: 3000, TotalSelfMicros: 2000, MinMicros: 1000, MaxMicros: 2000}},
 		{Method: MethodDescriptor{Name: "Fast", StartLine: 7}, File: "a.go",
-			Timing: timingStats{Calls: 4, TotalMicros: 1000, MinMicros: 100, MaxMicros: 400}},
+			Timing: timingStats{Calls: 4, TotalMicros: 1000, TotalSelfMicros: 800, MinMicros: 100, MaxMicros: 400}},
 	}
 }
 
@@ -142,8 +150,9 @@ func TestFormatProfileReport(t *testing.T) {
 	report := FormatProfileReport(profileFixture(), 0, 0)
 	for _, want := range []string{
 		"Profile Report (2 methods, total 4.00ms)",
-		"Slow", "a.go:3",
-		"Fast", "a.go:7",
+		"TOTAL", "SELF",
+		"Slow", "a.go:3", "2.00ms",
+		"Fast", "a.go:7", "0.80ms",
 	} {
 		if !strings.Contains(report, want) {
 			t.Errorf("report missing %q:\n%s", want, report)
@@ -341,6 +350,49 @@ func TestFormatProfileReportMeanCaveat(t *testing.T) {
 	}
 	if strings.Count(report, "~") != 1 {
 		t.Errorf("exactly one mean should carry the caveat:\n%s", report)
+	}
+}
+
+func TestFmtTotal(t *testing.T) {
+	tests := []struct {
+		millis float64
+		want   string
+	}{
+		{0, "0.00ms"},
+		{82.5, "82.50ms"},
+		{999.99, "999.99ms"},
+		{1000, "1.00s"}, // ms/s boundary
+		{13890, "13.89s"},
+		{59999.99, "60.00s"},
+		{60000, "1.00m"}, // s/m boundary
+		{1350000, "22.50m"},
+		{3599999, "60.00m"},
+		{3600000, "1.00h"}, // m/h boundary
+		{50004000, "13.89h"},
+	}
+	for _, tt := range tests {
+		if got := fmtTotal(tt.millis); got != tt.want {
+			t.Errorf("fmtTotal(%v) = %q, want %q", tt.millis, got, tt.want)
+		}
+	}
+}
+
+func TestProfileJSONSelfTime(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "profile.json")
+	if err := writeProfileJSON(path, profileFixture()); err != nil {
+		t.Fatalf("writeProfileJSON: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var report profileJSONReport
+	if err := json.Unmarshal(data, &report); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(report.Methods) != 2 || report.Methods[0].TotalSelfMicros != 2000 ||
+		report.Methods[1].TotalSelfMicros != 800 {
+		t.Errorf("JSON self time wrong: %+v", report.Methods)
 	}
 }
 

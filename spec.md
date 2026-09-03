@@ -169,11 +169,14 @@ crap4go profile [--name <pattern>] [--threshold <ms>] [--top <N>] [paths...]
 
 Runs the test suite against instrumented source code and reports per-method
 timing data. Source instrumentation: the module is copied to
-`.crap_profile_temp/`, every function/method body in the copy is wrapped with
-`defer crap4goRecord("<file>|<method>")()` — a defer-based timer that records
-elapsed microseconds on exit — plus a small generated collector per package
-that appends each call to a per-process log (`go test` runs each package as
-its own binary, so no cross-process locking is needed). `go test -count=1`
+`.crap_profile_temp/`, every function/method body in the copy begins with
+`crap4goEnter("<file>|<method>")` followed by `defer crap4goExit()` — the
+collector owns a per-goroutine call stack of open frames (goroutine ids
+parsed from `runtime.Stack`), and the deferred exit reports the call on
+every return path (panics included) on the registering goroutine — plus a
+small generated collector per package that appends each call to a
+per-process log (`go test` runs each package as its own binary, so no
+cross-process locking is needed). `go test -count=1`
 runs against the copy (`-count=1` bypasses Go's test cache, which would
 otherwise skip the instrumented binaries); the temp directory is cleaned up
 automatically after the run (kept when `CRAP_PROFILE_DEBUG` is set).
@@ -201,34 +204,55 @@ match a project method are ignored. Test files (`*_test.go`) are not
 instrumented; unparseable files (e.g. `testdata/` fixtures) are left
 unchanged.
 
-The collector logs every call immediately to a per-process file (one per
-test binary / pid, appends serialized by a mutex), so the upstream
-0.9.2 isolate-collision fixes (per-worker temp-file identity around the
-atomic rename, reader retry) do not apply — there is no temp-file/rename
-dance and no buffering whose flush cadence could lose records; the logs
-are read after the test run finishes.
+The collector logs every call immediately — one `<key>\t<inclusive>\t<self>`
+line per exit, where self is inclusive minus nested instrumented calls
+that completed while the frame was open — to a per-process file (one per
+test binary / pid, appends serialized by a mutex), so the upstream 0.9.2
+isolate-collision fixes (per-worker temp-file identity around the atomic
+rename, reader retry) do not apply — there is no temp-file/rename dance
+and no buffering whose flush cadence could lose records; the logs are
+read after the test run finishes. Upstream 0.9.5's delta-flush fix is
+likewise N/A here by design: the collector never accumulates or re-merges
+counters — it appends per-call deltas and the host merges each log
+exactly once, so the quadratic calls/total inflation upstream fixed
+cannot occur. Upstream 0.9.5's public `flush()` and
+flush-on-outermost-exit are N/A for the same reason (every call is
+written as it exits, so short runs do not lose their tail), and upstream
+commit b789739 (icon/PNG assets) is branding-only, not ported.
 
 ### Profile Report
 
 A fixed-width table is written to stdout, sorted by total time descending:
 
 ```
-TOTAL(ms) | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE
+TOTAL | SELF | % | CALLS | MEAN(µs) | MAX(µs) | @60fps(ms) | METHOD | FILE:LINE
 ```
 
-- **total time** — total execution time across all calls
+- **total time** — total execution time across all calls, inclusive of
+  nested instrumented calls
+- **self time** — total time minus the time spent in nested instrumented
+  calls that completed while the frame was open (flamegraph self-time
+  semantics); per-goroutine frame stacks keep it correct under parallel
+  test goroutines
 - **calls** — number of invocations
 - **mean time** — average time per call; sub-30µs means are marked with
-  `~` — the defer-based instrumentation costs on the order of a
-  microsecond per call, so such means are mostly profiler noise; read the
+  `~` — the enter/exit instrumentation costs on the order of a microsecond
+  per call (a goroutine-id traceback per enter/exit), so such means are
+  mostly profiler noise; read the
   CALLS and TOTAL deltas instead (ported from crap4dart 0.9.2)
 - **max time** — slowest single call
 - **@60fps** — estimated cost when called 60× per second (mean × 60, in
   milliseconds), highlighting methods that are cheap per-call but costly on
   hot paths
 
+TOTAL, SELF and the summary-line total render with adaptive units
+(`82.50ms`, `13.89s`, `22.50m`, `13.89h`, always two decimals) so the
+columns stay compact at extreme call counts (ported from crap4dart
+0.9.5).
+
 The full (untruncated) table and a JSON report are also written to
-`profile-reports/profile-<timestamp>.txt` and `.json`.
+`profile-reports/profile-<timestamp>.txt` and `.json`; each JSON method
+entry carries `totalSelfMicros` alongside the inclusive `totalMicros`.
 
 ## 10. `file-naming`
 
