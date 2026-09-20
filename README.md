@@ -60,8 +60,8 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 
 `profile`, `skill`, and the gate subcommands (`file-naming`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
-`banned-imports`, `magic-constants`, `test-assertions`,
-`folder-structure`) dispatch on the first argument only; anything else
+`banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
+`duplicates`) dispatch on the first argument only; anything else
 takes the analyze path above.
 
 ```sh
@@ -76,6 +76,7 @@ crap4go banned-imports --from 'ui/**' --forbid '**/db/**' --message 'UI must not
 crap4go magic-constants           # flag hex colors outside consts and repeated literals
 crap4go test-assertions           # flag tests with no fail-capable calls (t.Error/Fatal/..., panic)
 crap4go folder-structure           # flag dirs with loose .go files at the module root
+crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks across modules
 crap4go skill                     # print the profiling skill for AI agents
 ```
 
@@ -126,7 +127,17 @@ call (`Error`/`Errorf`/`Fatal`/`Fatalf`/`Fail`/`FailNow`, including via
 subtest closures) and no `panic()` — a test without assertions verifies
 nothing. `folder-structure` (from 0.9) flags directories holding more
 than 0 loose `.go` files directly (default: the module root) — group
-them into feature packages.
+them into feature packages. `duplicates` (from 0.2.0, plus dc64e9c's
+per-gate `sources`) tokenizes every scanned file with `go/scanner`
+dropping comments and auto-inserted semicolons, finds token windows of
+50+ tokens (`--min-tokens`) spanning 5+ lines (`--min-lines`) that appear
+at least twice within or across files (Rabin-Karp over the token
+stream), and fails files whose duplicated-line percentage is over
+`--threshold` (default 1.0). `--source PATH` unions extra directories or
+files into the scan — the cross-module mechanism: keep CRAP scoped to the
+module, but catch duplication spanning sibling packages. `--exclude GLOB`
+(repeatable) skips matching paths; by default `**/*_test.go` and
+`vendor/**` (the standard source exclusions) are skipped.
 
 ### Flag ordering
 
