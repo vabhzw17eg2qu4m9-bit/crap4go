@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.6.0...v0.7.0) (2026-09-20)
+
+
+### Features
+
+* port crap4dart duplication gate and profile 0.9.5 ([#21](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/21)) ([a7f3328](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/a7f3328ccd91cd1f1ffc8f17fa55dcf2011fe25f))
+
 ## [0.6.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.5.1...v0.6.0) (2026-09-03)
 
 
