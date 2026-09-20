@@ -31,6 +31,9 @@ Subcommands (must be the first argument):
   crap4go unused-files [paths...]  Flag packages never imported; exit 2
   crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
                                    Flag banned imports per from/forbid rule; exit 2
+  crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
+                    [--exclude GLOB]... [--source PATH]... [paths...]
+                                   Flag files over N% duplicated lines; exit 2
   crap4go magic-constants [paths...] Flag magic literals (hex colors, repeats); exit 2
   crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
   crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
@@ -143,6 +146,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"unused-files":     RunUnusedFilesCommand,
 	"banned-imports":   RunBannedImportsCommand,
 	"magic-constants":  RunMagicConstantsCommand,
+	"duplicates":       RunDuplicatesCommand,
 	"test-assertions":  RunTestAssertionsCommand,
 	"folder-structure": RunFolderStructureCommand,
 }

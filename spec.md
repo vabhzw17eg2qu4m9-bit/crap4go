@@ -42,7 +42,9 @@ crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
                                  Flag banned imports per from/forbid rule; exit 2
 crap4go magic-constants [paths...] Flag magic literals; exit 2 on violations
 crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
-crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
+crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
+                                 [--exclude GLOB]... [--source PATH]... [paths...]
+                                 Flag files over N% duplicated lines; exit 2
 crap4go skill                    Print the crap4go profiling skill for AI agents
 ```
 
@@ -51,7 +53,8 @@ combined). Unknown flags are usage errors.
 
 **Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
-`banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`)
+`banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
+`duplicates`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -284,8 +287,10 @@ subcommand dispatched like `file-naming`, with upstream default thresholds
 hard-coded and violations always failing (exit 2) — severity/ignorable/
 entries/baseline do not apply. Gate checks 11.5–11.10 of the crap4dart
 spec are ported with Go adaptations as described below; `magic-constants`
-comes from 0.6.0 (§11.13) with the 0.7–0.9 precision fixes, and
-`test-assertions` (§11.15) and `folder-structure` (§11.16) from 0.9.
+comes from 0.6.0 (§11.13) with the 0.7–0.9 precision fixes,
+`test-assertions` (§11.15) and `folder-structure` (§11.16) from 0.9, and
+`duplicates` (§11.11) from 0.2.0 with 0.2.1's whole-file tokenization and
+the per-gate `sources` key from dc64e9c.
 Not applicable upstream changes: 0.5.2's profile part-of fix is Dart-only;
 0.6.0's baseline/severity/config knobs have no counterpart (no gate
 framework); 0.6.1's internal constants refactor changes no behavior;
@@ -484,13 +489,54 @@ Output: one line per violation
 (`<dir>: N loose .go files directly in <dir> — group them into feature
 packages (max 0)`) plus a summary. Exit code 2 iff violations.
 
-## 20. `skill`
+## 20. `duplicates`
+
+```
+crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
+                   [--exclude GLOB]... [--source PATH]... [paths...]
+```
+
+Go adaptation of crap4dart's `duplication` gate (§11.11): detects exact
+copy-paste duplicates across Go source files. Every scanned file is
+tokenized with `go/scanner` — comments and the scanner's auto-inserted
+semicolons are dropped, everything else keeps its lexeme — so copies that
+differ in whitespace, layout or comments still match. A duplicated block
+is a sequence of at least `--min-tokens` (default 50) tokens spanning at
+least `--min-lines` (default 5) source lines that appears at least twice,
+within or across files: every file in the scan is indexed together with a
+Rabin-Karp rolling hash over the token stream (the port convention for
+upstream's hash window), and every window whose hash occurs at least twice
+marks its tokens as duplicated.
+
+Scan scope: the normal analyze selection (default walk or explicit paths),
+unioned with every repeatable `--source` path resolved against the project
+root — directories are walked recursively by the standard source rules,
+plain files are taken directly when they have the `.go` extension, missing
+paths are skipped silently. This is the dc64e9c cross-module mechanism:
+the CRAP analysis stays scoped to the module while duplication spans
+sibling packages or directories outside it. Files whose project-relative
+path matches a repeatable `--exclude` glob (the port's glob convention)
+are skipped; the default is the port's standard source exclusions,
+`**/*_test.go` and `vendor/**`, replaced when the flag is given. Files
+with fewer than `--min-tokens` tokens are skipped from the scan and its
+summary.
+
+A file violates when its percentage of duplicated lines — distinct lines
+holding duplicated tokens over its total line count — is strictly over
+`--threshold` (default 1.0). Output: one line per violation
+(`<path>:<first duplicated line>: <pct>% duplicated lines > <threshold>%`)
+plus a summary: pass `N files, P.PP% duplicated lines`, fail
+`M/N files over T% duplication`, where N counts the tokenized files.
+Exit code 2 iff there are violations; `no files with enough tokens` with
+exit 0 when no file clears the token minimum.
+
+## 21. `skill`
 
 Prints a Go-adapted version of crap4dart's profiling skill (when to profile,
 how the instrumentation works, how to read the report), ending with one line
 on installing it as an agent skill. Always exits 0.
 
-## 21. Threshold
+## 22. Threshold
 
 The threshold defaults to `8.0` and is overridable with `--threshold`. After
 the report is printed, the maximum numeric CRAP is compared against it; if
@@ -498,7 +544,7 @@ the report is printed, the maximum numeric CRAP is compared against it; if
 to stderr and the process exits 2. Otherwise the process exits 0. A threshold
 of `0` or less is a usage error.
 
-## 22. Exit codes
+## 23. Exit codes
 
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
@@ -508,15 +554,15 @@ of `0` or less is a usage error.
 |      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
 |      | `banned-imports`, `magic-constants`, `test-assertions`,                  |
-|      | `folder-structure`). (Also reported on stderr.)                          |
+|      | `duplicates`, `folder-structure`). (Also reported on stderr.)           |
 
-## 23. `--run-tests`
+## 24. `--run-tests`
 
 Runs `go test ./... -coverprofile=coverage.out -covermode=atomic` in the
 project root, streaming stdout/stderr through. On non-zero exit, the error is
 printed to stderr and the process exits 1.
 
-## 24. Non-goals
+## 25. Non-goals
 
 - No type-checking or build verification — parsing only.
 - No HTML/branch coverage reports — only the statement-level cover profile.
