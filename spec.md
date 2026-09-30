@@ -43,7 +43,8 @@ crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
 crap4go magic-constants [paths...] Flag magic literals; exit 2 on violations
 crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
 crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
-                                 [--exclude GLOB]... [--source PATH]... [paths...]
+                                 [--exclude GLOB]... [--source PATH]...
+                                 [--ignore-locals] [--ignore-literals] [paths...]
                                  Flag files over N% duplicated lines; exit 2
 crap4go skill                    Print the crap4go profiling skill for AI agents
 ```
@@ -493,7 +494,8 @@ packages (max 0)`) plus a summary. Exit code 2 iff violations.
 
 ```
 crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
-                   [--exclude GLOB]... [--source PATH]... [paths...]
+                   [--exclude GLOB]... [--source PATH]...
+                   [--ignore-locals] [--ignore-literals] [paths...]
 ```
 
 Go adaptation of crap4dart's `duplication` gate (§11.11): detects exact
@@ -507,6 +509,26 @@ within or across files: every file in the scan is indexed together with a
 Rabin-Karp rolling hash over the token stream (the port convention for
 upstream's hash window), and every window whose hash occurs at least twice
 marks its tokens as duplicated.
+
+Two opt-in normalizations extend detection to renamed clones
+("Type-2", from upstream 0599df2 + 94299e0). `--ignore-locals` renames
+identifiers declared inside an outermost function scope — the receiver
+name (a local binding; the fields it selects are API state), named
+parameters and named results, type parameters, `:=` locals including
+multi-assigns, range variables, and the bindings of function literals
+nested anywhere in the body (nested literals share the enclosing scope) —
+to `$L1`, `$L2`, ... in first-use order before hashing. Renamed clones
+hash identically, while locals swapped against each other keep different
+placeholders and never match. The API surface — called functions and
+methods, types, field references, package-level identifiers — keeps its
+lexeme. Go string literals are single opaque tokens (there is no
+interpolation), so nothing else changes under this mode.
+`--ignore-literals` replaces string literals with `$STR` and numeric
+literals (int, float, imaginary, rune) with `$NUM` before hashing.
+Detection is a union of two passes: the raw-lexeme pass always runs
+alongside the masked one when `--ignore-locals` is set, so exact copies
+are never lost when enclosing scopes shift placeholder numbering. With
+both flags off the gate reports exact copy-paste only.
 
 Scan scope: the normal analyze selection (default walk or explicit paths),
 unioned with every repeatable `--source` path resolved against the project

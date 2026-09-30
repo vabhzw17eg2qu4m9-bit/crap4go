@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/parser"
 	"go/scanner"
 	"go/token"
 	"io"
@@ -25,14 +27,16 @@ const (
 // of the scan set so --source additions follow the same rules.
 var defaultDupExcludes = []string{"**/*_test.go", "vendor/**"}
 
-// dupToken is one normalized token: its lexeme and source line. Comments
-// and auto-inserted semicolons never enter the stream; everything else
-// keeps its lexeme, so copies with different whitespace or comments still
-// match.
+// dupToken is one normalized token: its raw lexeme, its masked value and
+// its source line. Comments and auto-inserted semicolons never enter the
+// stream; everything else keeps its lexeme, so copies with different
+// whitespace or comments still match. The value equals the lexeme unless
+// literal/local masking applies (see dupNormalize).
 type dupToken struct {
-	value string
-	line  int
-	dup   bool
+	lexeme string
+	value  string
+	line   int
+	dup    bool
 }
 
 // dupFile is one file's token stream plus its total source line count.
@@ -60,21 +64,23 @@ type duplicationResult struct {
 
 // dupOptions holds the parsed `duplicates` subcommand configuration.
 type dupOptions struct {
-	threshold float64
-	minTokens int
-	minLines  int
-	excludes  []string
-	sources   []string
-	paths     []string
+	threshold      float64
+	minTokens      int
+	minLines       int
+	ignoreLocals   bool
+	ignoreLiterals bool
+	excludes       []string
+	sources        []string
+	paths          []string
 }
 
 // RunDuplicatesCommand implements `crap4go duplicates [--threshold N]
 // [--min-tokens N] [--min-lines N] [--exclude GLOB]... [--source PATH]...
-// [paths...]`: it tokenizes every scanned file, marks sliding token
-// windows that appear at least twice (>= min-tokens tokens, spanning >=
-// min-lines lines) within or across files, and flags files whose
-// duplicated line percentage exceeds --threshold. Exit code 2 iff there
-// are violations.
+// [--ignore-locals] [--ignore-literals] [paths...]`: it tokenizes every
+// scanned file, marks sliding token windows that appear at least twice
+// (>= min-tokens tokens, spanning >= min-lines lines) within or across
+// files, and flags files whose duplicated line percentage exceeds
+// --threshold. Exit code 2 iff there are violations.
 func RunDuplicatesCommand(args []string, root string, stdout, stderr io.Writer) int {
 	opts, code, ok := parseDuplicatesFlags(args, stderr)
 	if !ok {
@@ -117,6 +123,8 @@ func parseDuplicatesFlags(args []string, stderr io.Writer) (dupOptions, int, boo
 	fs.Float64Var(&opts.threshold, "threshold", defaultDupThreshold, "flag files over this % of duplicated lines")
 	fs.IntVar(&opts.minTokens, "min-tokens", defaultDupMinTokens, "minimum tokens in a duplicated block")
 	fs.IntVar(&opts.minLines, "min-lines", defaultDupMinLines, "minimum source lines in a duplicated block")
+	fs.BoolVar(&opts.ignoreLocals, "ignore-locals", false, "rename function-local identifiers consistently so renamed clones are detected")
+	fs.BoolVar(&opts.ignoreLiterals, "ignore-literals", false, "replace string and numeric literals with placeholders so clones differing only in values are detected")
 	excludes := &stringSlice{}
 	sources := &stringSlice{}
 	fs.Var(excludes, "exclude", "glob of project-relative paths to skip (repeatable)")
@@ -211,25 +219,25 @@ func matchesAnyGlob(name string, patterns []string) bool {
 // the scan (those with at least minTokens tokens); files with fewer are
 // skipped from the scan entirely.
 func CheckDuplicates(files []string, root string, opts dupOptions) (duplicationResult, int) {
-	scanned := scanDupFiles(files, opts.minTokens)
+	scanned := scanDupFiles(files, opts)
 	if len(scanned) == 0 {
 		return duplicationResult{}, 0
 	}
-	detectDuplicates(scanned, opts.minTokens, opts.minLines)
+	detectDuplicates(scanned, opts)
 	return buildDuplicationResult(scanned, root, opts.threshold), len(scanned)
 }
 
 // scanDupFiles reads and tokenizes every file, keeping those with at least
 // minTokens tokens (unreadable files are skipped).
-func scanDupFiles(files []string, minTokens int) []dupFile {
+func scanDupFiles(files []string, opts dupOptions) []dupFile {
 	var scanned []dupFile
 	for _, path := range files {
 		src, err := os.ReadFile(path)
 		if err != nil {
 			continue
 		}
-		tokens := tokenizeGo(src)
-		if len(tokens) < minTokens {
+		tokens := tokenizeGo(src, opts)
+		if len(tokens) < opts.minTokens {
 			continue
 		}
 		scanned = append(scanned, dupFile{path: path, tokens: tokens, totalLines: dupTotalLines(src)})
@@ -240,10 +248,18 @@ func scanDupFiles(files []string, minTokens int) []dupFile {
 // tokenizeGo scans src into normalized tokens with go/scanner: comments
 // are skipped by the default scan mode, auto-inserted semicolons
 // (SEMICOLON with literal "\n") are dropped, real semicolons and all other
-// tokens keep their lexeme.
-func tokenizeGo(src []byte) []dupToken {
+// tokens keep their lexeme. ignore_literals replaces string literals with
+// $STR and numeric literals with $NUM; ignore_locals renames identifiers
+// declared in an outermost function scope to $L1, $L2, ... in first-use
+// order, so renamed (Type-2) clones hash identically while the API
+// surface keeps its lexeme.
+func tokenizeGo(src []byte, opts dupOptions) []dupToken {
 	fset := token.NewFileSet()
 	file := fset.AddFile("", fset.Base(), len(src))
+	var scopes []*dupScope
+	if opts.ignoreLocals {
+		scopes = collectDupScopes(src)
+	}
 	var s scanner.Scanner
 	s.Init(file, src, nil /* errors ignored */, 0)
 	var tokens []dupToken
@@ -259,7 +275,202 @@ func tokenizeGo(src []byte) []dupToken {
 		if lit != "" {
 			value = lit
 		}
-		tokens = append(tokens, dupToken{value: value, line: file.Line(pos)})
+		tokens = append(tokens, dupToken{
+			lexeme: value,
+			value:  dupNormalize(value, tok, file.Offset(pos), scopes, opts),
+			line:   file.Line(pos),
+		})
+	}
+}
+
+// dupNormalize masks one token's value for hashing: under ignore_literals
+// string literals become $STR and numeric (int, float, imaginary, rune)
+// literals $NUM; under ignore_locals an identifier declared in one of the
+// outermost function scopes becomes that scope's $L placeholder. The API
+// surface — called functions and methods, types, field references,
+// package-level identifiers — keeps its lexeme. Go string literals are
+// single opaque tokens (there is no interpolation), so masking never
+// splits a string.
+func dupNormalize(value string, tok token.Token, offset int, scopes []*dupScope, opts dupOptions) string {
+	if opts.ignoreLiterals {
+		switch tok {
+		case token.STRING:
+			return "$STR"
+		case token.INT, token.FLOAT, token.IMAG, token.CHAR:
+			return "$NUM"
+		}
+	}
+	if tok != token.IDENT {
+		return value
+	}
+	if scope := dupScopeAt(scopes, offset); scope != nil && scope.names[value] {
+		return scope.placeholderFor(value)
+	}
+	return value
+}
+
+// dupScope is one outermost function scope: identifiers declared inside
+// the 0-based offset range [start, end) are renamed consistently for
+// clone matching (ported from upstream's _FunctionScope).
+type dupScope struct {
+	start, end   int
+	names        map[string]bool
+	placeholders map[string]string
+}
+
+// placeholderFor returns the scope's placeholder for name, assigned in
+// first-use order: renamed clones of the same algorithm hash identically,
+// while two locals swapped against each other keep different placeholders
+// and never match.
+func (s *dupScope) placeholderFor(name string) string {
+	if p, ok := s.placeholders[name]; ok {
+		return p
+	}
+	p := fmt.Sprintf("$L%d", len(s.placeholders)+1)
+	s.placeholders[name] = p
+	return p
+}
+
+// dupScopeAt returns the scope containing the 0-based offset, or nil —
+// binary search over the sorted, disjoint scopes.
+func dupScopeAt(scopes []*dupScope, offset int) *dupScope {
+	low, high := 0, len(scopes)-1
+	for low <= high {
+		mid := int(uint(low+high) >> 1)
+		switch {
+		case offset < scopes[mid].start:
+			high = mid - 1
+		case offset >= scopes[mid].end:
+			low = mid + 1
+		default:
+			return scopes[mid]
+		}
+	}
+	return nil
+}
+
+// collectDupScopes parses src and collects its outermost function scopes:
+// one per FuncDecl and one per function literal not nested in another
+// function; nested literals share the enclosing scope, and everything
+// declared inside them folds into it. Scope bounds are 0-based offsets
+// into src (the parse FileSet has its own base). Scopes are sorted and
+// disjoint. A file with no parse tree gets no scopes and keeps its raw
+// token stream.
+func collectDupScopes(src []byte) []*dupScope {
+	fset := token.NewFileSet()
+	f, _ := parser.ParseFile(fset, "", src, 0)
+	if f == nil {
+		return nil
+	}
+	base := fset.File(f.Package).Base()
+	var scopes []*dupScope
+	ast.Inspect(f, func(n ast.Node) bool {
+		switch fn := n.(type) {
+		case *ast.FuncDecl:
+			scopes = append(scopes, newDupScope(fn.Recv, fn.Type, fn.Body, fn, base))
+			return false
+		case *ast.FuncLit:
+			scopes = append(scopes, newDupScope(nil, fn.Type, fn.Body, fn, base))
+			return false
+		}
+		return true
+	})
+	return scopes
+}
+
+// newDupScope collects every identifier declared inside the function: the
+// receiver name (a local binding — its fields are API state), named
+// parameters and named results, type parameters, := locals including
+// multi-assigns, range variables, and the bindings of function literals
+// nested anywhere in the body. The function's own name is API surface and
+// stays out of the scope.
+func newDupScope(recv *ast.FieldList, typ *ast.FuncType, body *ast.BlockStmt, node ast.Node, base int) *dupScope {
+	s := &dupScope{
+		start:        int(dupScopeStart(recv, typ, body)) - base,
+		end:          int(node.End()) - base,
+		names:        map[string]bool{},
+		placeholders: map[string]string{},
+	}
+	collectFieldNames(s.names, recv)
+	collectFieldNames(s.names, typ.TypeParams)
+	collectFieldNames(s.names, typ.Params)
+	collectFieldNames(s.names, typ.Results)
+	if body != nil {
+		ast.Inspect(body, func(n ast.Node) bool {
+			collectStmtNames(s.names, n)
+			return true
+		})
+	}
+	return s
+}
+
+// dupScopeStart picks the function's first declared-name position: the
+// receiver when present (it precedes the name), else the type-parameter
+// or parameter list — the function's own name stays outside the range.
+func dupScopeStart(recv *ast.FieldList, typ *ast.FuncType, body *ast.BlockStmt) token.Pos {
+	if recv != nil {
+		return recv.Pos()
+	}
+	if typ.TypeParams != nil {
+		return typ.TypeParams.Pos()
+	}
+	if typ.Params != nil {
+		return typ.Params.Pos()
+	}
+	if body != nil {
+		return body.Pos()
+	}
+	return typ.End()
+}
+
+// collectFieldNames adds every named identifier of a field list —
+// receiver, type parameters, parameters, named results — to names.
+func collectFieldNames(names map[string]bool, list *ast.FieldList) {
+	if list == nil {
+		return
+	}
+	for _, field := range list.List {
+		for _, name := range field.Names {
+			names[name.Name] = true
+		}
+	}
+}
+
+// collectStmtNames adds the identifiers a body declaration introduces:
+// var/const declarations, := assignments, range variables, and the
+// parameters of nested function literals.
+func collectStmtNames(names map[string]bool, n ast.Node) {
+	switch d := n.(type) {
+	case *ast.ValueSpec:
+		collectIdentNames(names, d.Names)
+	case *ast.AssignStmt:
+		if d.Tok == token.DEFINE {
+			collectExprNames(names, d.Lhs...)
+		}
+	case *ast.RangeStmt:
+		if d.Tok == token.DEFINE {
+			collectExprNames(names, d.Key, d.Value)
+		}
+	case *ast.FuncLit:
+		collectFieldNames(names, d.Type.Params)
+		collectFieldNames(names, d.Type.Results)
+	}
+}
+
+// collectIdentNames adds every identifier's name to names.
+func collectIdentNames(names map[string]bool, idents []*ast.Ident) {
+	for _, id := range idents {
+		names[id.Name] = true
+	}
+}
+
+// collectExprNames adds every identifier position of the given
+// expressions to names.
+func collectExprNames(names map[string]bool, exprs ...ast.Expr) {
+	for _, e := range exprs {
+		if id, ok := e.(*ast.Ident); ok {
+			names[id.Name] = true
+		}
 	}
 }
 
@@ -287,11 +498,32 @@ const dupHashBase = 0x9e3779b97f4a7c15
 
 // detectDuplicates indexes every valid minTokens-token window of every
 // file under a rolling hash, then marks the tokens of all windows whose
-// hash occurred at least twice — within or across files.
-func detectDuplicates(files []dupFile, minTokens, minLines int) {
+// hash occurred at least twice — within or across files. Two passes: the
+// raw pass compares lexemes (Type-1 copy-paste) and runs whenever
+// ignore_locals is enabled; the masked pass compares normalized values.
+// The union of both is reported, so enabling ignore_locals can only add
+// findings, never lose exact copies whose enclosing scopes shift
+// placeholder numbering.
+func detectDuplicates(files []dupFile, opts dupOptions) {
+	if opts.ignoreLocals {
+		markDupWindows(files, opts, dupRawCode)
+	}
+	markDupWindows(files, opts, dupMaskedCode)
+}
+
+// dupRawCode hashes a token's raw lexeme; dupMaskedCode hashes its masked
+// value (identical to the lexeme when no masking applies).
+func dupRawCode(t dupToken) uint64 { return dupHash(t.lexeme) }
+
+func dupMaskedCode(t dupToken) uint64 { return dupHash(t.value) }
+
+// markDupWindows runs one detection pass over the given token codes of
+// every file and marks the tokens of all windows that occurred at least
+// twice. Marks accumulate on the shared token slices, so passes union.
+func markDupWindows(files []dupFile, opts dupOptions, code func(dupToken) uint64) {
 	occurrences := map[uint64][]dupPos{}
 	for i := range files {
-		indexDupFile(&files[i], i, minTokens, minLines, occurrences)
+		indexDupFile(&files[i], i, opts, code, occurrences)
 	}
 	for _, positions := range occurrences {
 		if len(positions) < 2 {
@@ -299,7 +531,7 @@ func detectDuplicates(files []dupFile, minTokens, minLines int) {
 		}
 		for _, pos := range positions {
 			tokens := files[pos.file].tokens
-			for i := pos.token; i < pos.token+minTokens && i < len(tokens); i++ {
+			for i := pos.token; i < pos.token+opts.minTokens && i < len(tokens); i++ {
 				tokens[i].dup = true
 			}
 		}
@@ -309,17 +541,18 @@ func detectDuplicates(files []dupFile, minTokens, minLines int) {
 // indexDupFile slides a Rabin-Karp window of minTokens token codes over
 // the file and records each window that spans at least minLines lines.
 // uint64 arithmetic wraps naturally, giving the mod-2^64 semantics.
-func indexDupFile(f *dupFile, fileIdx, minTokens, minLines int, occurrences map[uint64][]dupPos) {
+func indexDupFile(f *dupFile, fileIdx int, opts dupOptions, code func(dupToken) uint64, occurrences map[uint64][]dupPos) {
 	n := len(f.tokens)
-	if n < minTokens {
+	if n < opts.minTokens {
 		return
 	}
 	codes := make([]uint64, n)
 	lines := make([]int, n)
 	for i, t := range f.tokens {
-		codes[i] = dupHash(t.value)
+		codes[i] = code(t)
 		lines[i] = t.line
 	}
+	minTokens, minLines := opts.minTokens, opts.minLines
 	pow := powDupBase(minTokens - 1)
 	var hash uint64
 	for i := range minTokens {

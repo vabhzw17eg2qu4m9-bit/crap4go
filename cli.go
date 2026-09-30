@@ -32,7 +32,8 @@ Subcommands (must be the first argument):
   crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
                                    Flag banned imports per from/forbid rule; exit 2
   crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
-                    [--exclude GLOB]... [--source PATH]... [paths...]
+                    [--exclude GLOB]... [--source PATH]...
+                    [--ignore-locals] [--ignore-literals] [paths...]
                                    Flag files over N% duplicated lines; exit 2
   crap4go magic-constants [paths...] Flag magic literals (hex colors, repeats); exit 2
   crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
