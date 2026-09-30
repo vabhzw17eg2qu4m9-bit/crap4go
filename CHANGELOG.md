@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.7.0...v0.8.0) (2026-09-30)
+
+
+### Features
+
+* duplication gate Type-2 clone detection — ignore_locals / ignore_literals ([#23](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/23)) ([4ad36e1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/4ad36e1109a6fa7f10d6ef24d153bf1b34870140))
+
 ## [0.7.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.6.0...v0.7.0) (2026-09-20)
 
 
