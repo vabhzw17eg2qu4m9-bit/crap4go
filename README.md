@@ -137,7 +137,18 @@ stream), and fails files whose duplicated-line percentage is over
 files into the scan — the cross-module mechanism: keep CRAP scoped to the
 module, but catch duplication spanning sibling packages. `--exclude GLOB`
 (repeatable) skips matching paths; by default `**/*_test.go` and
-`vendor/**` (the standard source exclusions) are skipped.
+`vendor/**` (the standard source exclusions) are skipped. Two opt-in
+normalizations extend detection to renamed clones: `--ignore-locals`
+renames function-local identifiers (receiver name, named params and
+results, type parameters, `:=` locals, range variables, function-literal
+bindings) consistently in first-use order, keeping the API surface —
+called functions and methods, types, field references — visible, so two
+locals swapped against each other never match; detection becomes a union
+of the raw-lexeme pass and the masked pass, so exact copies are never
+lost when enclosing scopes shift placeholder numbering.
+`--ignore-literals` replaces string and numeric literals with `$STR`/
+`$NUM` placeholders. Both are off by default: the default mode reports
+exact copy-paste only.
 
 ### Flag ordering
 
