@@ -572,7 +572,8 @@ the unclebob/mutator research conclusions):
 crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
                  [--timeout-seconds N] [--max-mutants N]
                  [--operators LIST] [--exclude GLOB]... [--cache]
-                 [--test-args ARGS] [paths...]
+                 [--test-args ARGS] [--diff-base REF] [--scope-tests]
+                 [paths...]
 ```
 
 A declarative, category-tagged operator table is matched on parsed
@@ -652,6 +653,31 @@ on large repos; scoping is the consumer's responsibility — a mutant is
 killed only if the scoped suite would kill it. Validation is strict: an
 empty (all-whitespace) value is a usage error; args are split on
 whitespace.
+
+Diff-scoped execution (port of crap4dart 8228585): under
+`--diff-base <ref>` the gate intersects the candidate sites with the
+changed lines BEFORE executing, not merely filters reported violations
+afterwards: a site runs only when its containing method intersects the
+diff (falling back to the site's own line when no method contains it).
+Sites outside the diff are neither executed nor counted, so a per-PR run
+pays only for the mutants of the changed methods. The changed lines come
+from `git diff --unified=0 <ref>` (fixed argv, no shell): each file's
+added lines in the new file; deleted files (`/dev/null`), binary files
+and pure-removal hunks contribute nothing. An unresolvable ref or a
+non-repository project is a fatal error (exit 1, reported on stderr).
+
+`--scope-tests` (default false) derives that per-mutant scoping
+automatically from the Go layout: each mutant's invocation is narrowed to
+the derived test file(s) of the mutated file (`dir/base.go` →
+`dir/base_test.go`, the in-package convention), so the scoped invocation
+is `go test ./<dir>` — the mutated file's own package — falling back to
+`--test-args` when no candidate test file exists. A scoped kill is
+monotone (the scoped invocation is a subset of the full suite) and is
+cached as a regular kill: `scope_tests` is deliberately NOT part of the
+cache meta guard. A scoped survivor — timeout included — is re-confirmed
+once against the full invocation, and only the confirmed outcome is
+reported and cached; the summary gains
+`; test-scoped N (M re-confirmed killed)` when scoping confirmed kills.
 
 ## 22. `skill`
 

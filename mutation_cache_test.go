@@ -63,7 +63,7 @@ var cacheTestMeta = currentMutationCacheMeta(mutationAllCategories(), defaultMut
 func runCachedEngine(t *testing.T, dir string, sites []MutationSite, refs map[MutationSite]mutationMethodRef, live map[string]bool, runner mutantTestRunner, meta mutationCacheMeta) mutationRunResult {
 	t.Helper()
 	cacheFile := filepath.Join(dir, mutationCacheFileName)
-	result, err := runMutationEngine(dir, sites, 5*time.Second, runner, &mutationCacheSession{
+	result, err := runMutationEngine(dir, sites, 5*time.Second, defaultMutationTestArgs, nil, runner, &mutationCacheSession{
 		cache:       loadMutationCache(cacheFile, meta),
 		cacheFile:   cacheFile,
 		siteMethods: refs,
@@ -80,7 +80,7 @@ func TestMutationCacheReplaysKillsOnSecondRun(t *testing.T) {
 	writeCacheFixture(t, dir, "a.go", cacheSrcA)
 	sites, refs, live := cacheFixtureScan(t, dir, "a.go", cacheSrcA)
 	calls := 0
-	runner := func(string, time.Duration) (mutantOutcome, error) {
+	runner := func(string, time.Duration, []string) (mutantOutcome, error) {
 		calls++
 		return mutantKilled, nil
 	}
@@ -113,7 +113,7 @@ func TestMutationCacheSurvivorsAlwaysRerun(t *testing.T) {
 	writeCacheFixture(t, dir, "a.go", cacheSrcA)
 	sites, refs, live := cacheFixtureScan(t, dir, "a.go", cacheSrcA)
 	call := 0
-	first := runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration) (mutantOutcome, error) {
+	first := runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration, []string) (mutantOutcome, error) {
 		call++
 		if call == 1 {
 			return mutantKilled, nil
@@ -125,7 +125,7 @@ func TestMutationCacheSurvivorsAlwaysRerun(t *testing.T) {
 	}
 
 	secondCalls := 0
-	second := runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration) (mutantOutcome, error) {
+	second := runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration, []string) (mutantOutcome, error) {
 		secondCalls++
 		return mutantKilled, nil
 	}, cacheTestMeta)
@@ -142,7 +142,7 @@ func TestMutationCacheEditInvalidatesOnlyEditedMethod(t *testing.T) {
 	dir := t.TempDir()
 	writeCacheFixture(t, dir, "a.go", cacheSrcA)
 	sites, refs, live := cacheFixtureScan(t, dir, "a.go", cacheSrcA)
-	runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration) (mutantOutcome, error) {
+	runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration, []string) (mutantOutcome, error) {
 		return mutantKilled, nil
 	}, cacheTestMeta)
 
@@ -151,7 +151,7 @@ func TestMutationCacheEditInvalidatesOnlyEditedMethod(t *testing.T) {
 	writeCacheFixture(t, dir, "a.go", edited)
 	editedSites, editedRefs, editedLive := cacheFixtureScan(t, dir, "a.go", edited)
 	calls := 0
-	second := runCachedEngine(t, dir, editedSites, editedRefs, editedLive, func(string, time.Duration) (mutantOutcome, error) {
+	second := runCachedEngine(t, dir, editedSites, editedRefs, editedLive, func(string, time.Duration, []string) (mutantOutcome, error) {
 		calls++
 		return mutantKilled, nil
 	}, cacheTestMeta)
@@ -167,12 +167,12 @@ func TestMutationCacheMetaMismatchWipes(t *testing.T) {
 	dir := t.TempDir()
 	writeCacheFixture(t, dir, "a.go", cacheSrcA)
 	sites, refs, live := cacheFixtureScan(t, dir, "a.go", cacheSrcA)
-	runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration) (mutantOutcome, error) {
+	runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration, []string) (mutantOutcome, error) {
 		return mutantKilled, nil
 	}, cacheTestMeta)
 
 	calls := 0
-	second := runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration) (mutantOutcome, error) {
+	second := runCachedEngine(t, dir, sites, refs, live, func(string, time.Duration, []string) (mutantOutcome, error) {
 		calls++
 		return mutantKilled, nil
 	}, currentMutationCacheMeta(map[string]bool{"arithmetic": true}, defaultMutationTestArgs))
@@ -240,7 +240,7 @@ func TestMutationCachePrunesVanishedMethods(t *testing.T) {
 		allLive[key] = true
 	}
 	runCachedEngine(t, dir, append(append([]MutationSite{}, sitesA...), sitesB...), allRefs, allLive,
-		func(string, time.Duration) (mutantOutcome, error) { return mutantKilled, nil }, cacheTestMeta)
+		func(string, time.Duration, []string) (mutantOutcome, error) { return mutantKilled, nil }, cacheTestMeta)
 	cacheFile := filepath.Join(dir, mutationCacheFileName)
 	if got := loadMutationCache(cacheFile, cacheTestMeta); len(got.Methods) != 3 {
 		t.Fatalf("got %d cached methods, want 3: %v", len(got.Methods), got.Methods)
@@ -251,7 +251,7 @@ func TestMutationCachePrunesVanishedMethods(t *testing.T) {
 		t.Fatal(err)
 	}
 	calls := 0
-	runCachedEngine(t, dir, sitesA, refsA, liveA, func(string, time.Duration) (mutantOutcome, error) {
+	runCachedEngine(t, dir, sitesA, refsA, liveA, func(string, time.Duration, []string) (mutantOutcome, error) {
 		calls++
 		return mutantKilled, nil
 	}, cacheTestMeta)
@@ -287,7 +287,7 @@ func TestMutationCacheCrossFileKeys(t *testing.T) {
 	allSites := append(append([]MutationSite{}, sitesA...), sitesB...)
 	// Kill everything in a.go, let all of b.go survive.
 	call := 0
-	runCachedEngine(t, dir, allSites, allRefs, allLive, func(string, time.Duration) (mutantOutcome, error) {
+	runCachedEngine(t, dir, allSites, allRefs, allLive, func(string, time.Duration, []string) (mutantOutcome, error) {
 		call++
 		if call <= len(sitesA) {
 			return mutantKilled, nil
@@ -296,7 +296,7 @@ func TestMutationCacheCrossFileKeys(t *testing.T) {
 	}, cacheTestMeta)
 
 	secondCalls := 0
-	second := runCachedEngine(t, dir, allSites, allRefs, allLive, func(string, time.Duration) (mutantOutcome, error) {
+	second := runCachedEngine(t, dir, allSites, allRefs, allLive, func(string, time.Duration, []string) (mutantOutcome, error) {
 		secondCalls++
 		return mutantKilled, nil
 	}, cacheTestMeta)
@@ -336,7 +336,7 @@ func TestMutationIntegrityHealsStrandedMutant(t *testing.T) {
 	proceed := make(chan struct{})
 	done := make(chan struct{})
 	call := 0
-	runner := func(string, time.Duration) (mutantOutcome, error) {
+	runner := func(string, time.Duration, []string) (mutantOutcome, error) {
 		call++
 		if call == 1 {
 			go func() {
@@ -355,7 +355,7 @@ func TestMutationIntegrityHealsStrandedMutant(t *testing.T) {
 		}
 		return mutantKilled, nil
 	}
-	result, err := runMutationEngine(dir, sites, 5*time.Second, runner, nil)
+	result, err := runMutationEngine(dir, sites, 5*time.Second, defaultMutationTestArgs, nil, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +395,7 @@ func TestMutationIntegrityCleanOnMidLoopError(t *testing.T) {
 	}
 	sites := append(append([]MutationSite{}, sitesA...), sitesB...)
 	call := 0
-	_, err := runMutationEngine(dir, sites, 5*time.Second, func(string, time.Duration) (mutantOutcome, error) {
+	_, err := runMutationEngine(dir, sites, 5*time.Second, defaultMutationTestArgs, nil, func(string, time.Duration, []string) (mutantOutcome, error) {
 		call++
 		if call == len(sitesA)+1 {
 			return 0, errors.New("suite runner gone")
