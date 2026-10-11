@@ -436,10 +436,14 @@ type mutationSiteOutcome struct {
 // integrityViolations lists files that did NOT match their pre-run
 // snapshot after the loop and had to be re-restored by the end-of-run
 // integrity check — the tree is healed, but the run must be treated as
-// suspect.
+// suspect. scopedCount counts sites whose first (scoped) run did not kill
+// the mutant and that were re-confirmed against the full invocation;
+// confirmedCount counts those confirmations that killed the mutant.
 type mutationRunResult struct {
 	outcomes            []mutationSiteOutcome
 	integrityViolations []string
+	scopedCount         int
+	confirmedCount      int
 }
 
 // fromCacheCount counts kills replayed from the digest cache instead of
@@ -491,16 +495,24 @@ func (r mutationRunResult) survivorsByCategory() map[string]int {
 }
 
 // mutantTestRunner runs the project's test suite against the currently
-// mutated tree; inject a fake in tests instead of running real suites.
-type mutantTestRunner func(projectRoot string, timeout time.Duration) (mutantOutcome, error)
+// mutated tree; the invocation arguments are resolved per site by the
+// engine (test scoping) and passed to every call. Inject a fake in tests
+// instead of running real suites.
+type mutantTestRunner func(projectRoot string, timeout time.Duration, testArgs []string) (mutantOutcome, error)
 
 // runMutationEngine mutates every site one at a time and runs the project's
-// tests against each mutant, restoring the file afterwards. With a
-// mutationCacheSession, mutants of unchanged methods whose previous outcome
-// was killed are replayed from the cache (counted killed, marked fromCache);
-// survivors are always re-executed. The merged cache is persisted after the
-// run. The first spawn/unavailable error propagates to the caller.
-func runMutationEngine(projectRoot string, sites []MutationSite, timeout time.Duration, runner mutantTestRunner, caching *mutationCacheSession) (result mutationRunResult, err error) {
+// tests against each mutant, restoring the file afterwards. testArgs is the
+// full test invocation; testArgsFor may resolve narrower per-site arguments
+// (test scoping): a scoped invocation is a SUBSET of the full suite, so a
+// scoped kill is monotone — the full suite kills that mutant too — and is
+// cached as a regular kill. Scoped survival is NOT monotone (the scoped run
+// may omit the killing test), so every scoped survivor is re-executed once
+// against testArgs before the outcome is final. With a mutationCacheSession,
+// mutants of unchanged methods whose previous outcome was killed are replayed
+// from the cache (counted killed, marked fromCache); survivors are always
+// re-executed. The merged cache is persisted after the run. The first
+// spawn/unavailable error propagates to the caller.
+func runMutationEngine(projectRoot string, sites []MutationSite, timeout time.Duration, testArgs []string, testArgsFor func(MutationSite) []string, runner mutantTestRunner, caching *mutationCacheSession) (result mutationRunResult, err error) {
 	// Safety net: snapshot every file about to be mutated so the end of the
 	// run can prove the tree is byte-identical to the start. A real run
 	// once ended with a leftover mutant on disk despite the per-site
@@ -512,23 +524,78 @@ func runMutationEngine(projectRoot string, sites []MutationSite, timeout time.Du
 	}
 	defer func() { result.integrityViolations = verifyMutationTree(originals) }()
 	fresh := map[string]mutationFreshMethod{}
-	for _, site := range sites {
-		outcome, runErr := runMutationSite(site, projectRoot, timeout, runner, caching, fresh)
-		if runErr != nil {
-			return mutationRunResult{}, runErr
-		}
-		result.outcomes = append(result.outcomes, outcome)
+	deferred, err := runMutationSites(projectRoot, sites, timeout, testArgs, testArgsFor, runner, caching, fresh, &result)
+	if err != nil {
+		return mutationRunResult{}, err
+	}
+	confirmed, err := confirmScopedSurvivors(projectRoot, timeout, testArgs, runner, caching, fresh, deferred, &result)
+	if err != nil {
+		return mutationRunResult{}, err
 	}
 	if err := persistMutationCache(caching, fresh); err != nil {
 		return mutationRunResult{}, err
 	}
+	result.scopedCount = len(deferred)
+	result.confirmedCount = confirmed
 	return result, nil
 }
 
-// runMutationSite executes or replays one site: a kill of an unchanged
-// method replays from the cache, everything else runs the test suite; the
-// outcome is accumulated for the cache merge either way.
-func runMutationSite(site MutationSite, projectRoot string, timeout time.Duration, runner mutantTestRunner, caching *mutationCacheSession, fresh map[string]mutationFreshMethod) (mutationSiteOutcome, error) {
+// runMutationSites runs every site once: cache replays, scoped or full
+// executions. Scoped survivors are deferred (their outcome indices are
+// returned) for confirmScopedSurvivors; everything else is accumulated
+// into fresh.
+func runMutationSites(projectRoot string, sites []MutationSite, timeout time.Duration, testArgs []string, testArgsFor func(MutationSite) []string, runner mutantTestRunner, caching *mutationCacheSession, fresh map[string]mutationFreshMethod, result *mutationRunResult) ([]int, error) {
+	var deferred []int
+	for _, site := range sites {
+		scopedArgs := []string(nil)
+		if testArgsFor != nil {
+			scopedArgs = testArgsFor(site)
+		}
+		args := scopedArgs
+		if args == nil {
+			args = testArgs
+		}
+		outcome, runErr := runMutationSite(site, projectRoot, timeout, runner, caching, fresh, args)
+		if runErr != nil {
+			return nil, runErr
+		}
+		result.outcomes = append(result.outcomes, outcome)
+		if scopedArgs != nil && outcome.outcome != mutantKilled {
+			// Scoped survival is unverified: the scoped run may omit the
+			// killing test — confirm against the full invocation before
+			// caching or reporting the outcome.
+			deferred = append(deferred, len(result.outcomes)-1)
+		}
+	}
+	return deferred, nil
+}
+
+// confirmScopedSurvivors re-runs every deferred scoped survivor against the
+// full invocation; returns how many confirmations killed the mutant. Only
+// the confirmed outcome is kept: reported and cached.
+func confirmScopedSurvivors(projectRoot string, timeout time.Duration, testArgs []string, runner mutantTestRunner, caching *mutationCacheSession, fresh map[string]mutationFreshMethod, deferred []int, result *mutationRunResult) (int, error) {
+	confirmed := 0
+	for _, index := range deferred {
+		record := result.outcomes[index]
+		outcome, err := runSingleMutant(record.site, projectRoot, timeout, runner, testArgs)
+		if err != nil {
+			return 0, err
+		}
+		result.outcomes[index] = mutationSiteOutcome{site: record.site, outcome: outcome}
+		if outcome == mutantKilled {
+			confirmed++
+		}
+		if ref, known := caching.ref(record.site); known {
+			accumulateMutationOutcome(fresh, ref, cachedMutationOutcomeFor(record.site, outcome, ref))
+		}
+	}
+	return confirmed, nil
+}
+
+// runMutationSite executes or replays one site under testArgs: a kill of an
+// unchanged method replays from the cache, everything else runs the test
+// suite; the outcome is accumulated for the cache merge either way.
+func runMutationSite(site MutationSite, projectRoot string, timeout time.Duration, runner mutantTestRunner, caching *mutationCacheSession, fresh map[string]mutationFreshMethod, testArgs []string) (mutationSiteOutcome, error) {
 	ref, known := caching.ref(site)
 	if known {
 		if replayed, ok := caching.cache.replayKill(ref, site); ok {
@@ -536,7 +603,7 @@ func runMutationSite(site MutationSite, projectRoot string, timeout time.Duratio
 			return mutationSiteOutcome{site: site, outcome: mutantKilled, fromCache: true}, nil
 		}
 	}
-	outcome, err := runSingleMutant(site, projectRoot, timeout, runner)
+	outcome, err := runSingleMutant(site, projectRoot, timeout, runner, testArgs)
 	if err != nil {
 		return mutationSiteOutcome{}, err
 	}
@@ -579,9 +646,10 @@ func verifyMutationTree(originals map[string][]byte) []string {
 	return violations
 }
 
-// runSingleMutant applies one mutation in place, runs the test runner, and
-// always restores the original content — also after timeouts and errors.
-func runSingleMutant(site MutationSite, projectRoot string, timeout time.Duration, runner mutantTestRunner) (mutantOutcome, error) {
+// runSingleMutant applies one mutation in place, runs the test runner with
+// testArgs, and always restores the original content — also after timeouts
+// and errors.
+func runSingleMutant(site MutationSite, projectRoot string, timeout time.Duration, runner mutantTestRunner, testArgs []string) (mutantOutcome, error) {
 	src, err := os.ReadFile(site.File)
 	if err != nil {
 		return 0, err
@@ -590,7 +658,7 @@ func runSingleMutant(site MutationSite, projectRoot string, timeout time.Duratio
 		return 0, err
 	}
 	defer func() { _ = os.WriteFile(site.File, src, 0o644) }() // always restore
-	return runner(projectRoot, timeout)
+	return runner(projectRoot, timeout, testArgs)
 }
 
 // accumulateMutationOutcome adds one outcome to the run's fresh entry for
@@ -667,14 +735,20 @@ type mutationOptions struct {
 	paths          []string
 	cache          bool
 	testArgs       []string
+	diffBase       string
+	scopeTests     bool
 }
 
 // RunMutationCommand implements `crap4go mutation [--coverage PATH]
 // [--min-score F] [--max-survivors N] [--timeout-seconds N] [--max-mutants N]
 // [--operators LIST] [--exclude GLOB]... [--cache] [--test-args ARG]...
-// [paths...]`: it detects mutation sites on the parsed ASTs of the
-// selection, keeps only sites covered by the coverage profile, and mutates
-// them one at a time, re-running `go <test-args>` per mutant. Killed mutants
+// [--diff-base REF] [--scope-tests] [paths...]`: it detects mutation sites
+// on the parsed ASTs of the selection, keeps only sites covered by the
+// coverage profile, and mutates them one at a time, re-running
+// `go <test-args>` per mutant. Under --diff-base only sites whose containing
+// method intersects the changed lines execute; --scope-tests narrows each
+// mutant's run to the derived test file(s) of the mutated file (scoped
+// survivors are re-confirmed against the full invocation). Killed mutants
 // of methods whose source span is unchanged replay from the digest cache
 // (.crap-mutation-cache.json); survivors always re-execute. A non-zero exit
 // kills the mutant (compile errors included), a timeout counts as survived.
@@ -712,6 +786,8 @@ func parseMutationFlags(args []string, stderr io.Writer) (mutationOptions, int, 
 	fs.IntVar(&opts.maxMutants, "max-mutants", opts.maxMutants, "cap on executed covered sites (file order, then offset)")
 	fs.BoolVar(&opts.cache, "cache", opts.cache, "replay kills of unchanged methods from .crap-mutation-cache.json")
 	testArgs := fs.String("test-args", strings.Join(defaultMutationTestArgs, " "), "per-mutant `go` test invocation args (space-separated)")
+	fs.StringVar(&opts.diffBase, "diff-base", "", "git `ref`: execute only mutants of methods changed since it")
+	fs.BoolVar(&opts.scopeTests, "scope-tests", opts.scopeTests, "narrow each mutant's run to the derived test file(s) of the mutated file")
 	var operators string
 	fs.StringVar(&operators, "operators", "", "comma-separated operator categories (default: all)")
 	excludes := &stringSlice{}
@@ -754,7 +830,12 @@ func runMutationGate(opts mutationOptions, root string, stdout, stderr io.Writer
 	if skip {
 		return code
 	}
-	scan, err := mutationCoveredSites(files, root, cov, categories, opts.maxMutants, opts.excludes)
+	diff, err := mutationDiffFor(opts, root)
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	scan, err := mutationCoveredSites(files, root, cov, categories, opts.maxMutants, opts.excludes, diff)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -763,15 +844,37 @@ func runMutationGate(opts mutationOptions, root string, stdout, stderr io.Writer
 		printNoSites(scan.uncovered, stdout)
 		return 0
 	}
-	timeout := time.Duration(opts.timeoutSeconds) * time.Second
-	runner := func(projectRoot string, runTimeout time.Duration) (mutantOutcome, error) {
-		return mutantTestRunnerOS(projectRoot, runTimeout, opts.testArgs)
-	}
-	result, err := runMutationEngine(root, scan.sites, timeout, runner, openMutationCache(root, opts, scan, categories))
+	result, err := runMutationEngineFor(root, opts, scan, categories)
 	if err != nil {
 		return mutationEngineError(err, stdout, stderr)
 	}
 	return mutationVerdict(result, scan.uncovered, opts, root, stdout, stderr)
+}
+
+// mutationDiffFor maps the changed files of --diff-base to their added or
+// changed lines; nil when no diff base was given (a full run).
+func mutationDiffFor(opts mutationOptions, root string) (map[string]map[int]bool, error) {
+	if opts.diffBase == "" {
+		return nil, nil
+	}
+	return mutationDiffLines(root, opts.diffBase)
+}
+
+// runMutationEngineFor wires the gate's engine invocation: the OS test
+// runner carrying the resolved per-site invocation arguments, optional
+// test scoping and the digest cache.
+func runMutationEngineFor(root string, opts mutationOptions, scan mutationScan, categories map[string]bool) (mutationRunResult, error) {
+	timeout := time.Duration(opts.timeoutSeconds) * time.Second
+	runner := func(projectRoot string, runTimeout time.Duration, testArgs []string) (mutantOutcome, error) {
+		return mutantTestRunnerOS(projectRoot, runTimeout, testArgs)
+	}
+	var testArgsFor func(MutationSite) []string
+	if opts.scopeTests {
+		testArgsFor = func(site MutationSite) []string {
+			return mutationScopedTestArgs(root, site.File)
+		}
+	}
+	return runMutationEngine(root, scan.sites, timeout, opts.testArgs, testArgsFor, runner, openMutationCache(root, opts, scan, categories))
 }
 
 // openMutationCache opens the digest cache when enabled: it loads the file
@@ -782,6 +885,9 @@ func openMutationCache(root string, opts mutationOptions, scan mutationScan, cat
 		return nil
 	}
 	cacheFile := filepath.Join(root, mutationCacheFileName)
+	// scope_tests is deliberately NOT part of the meta guard: a scoped kill
+	// is monotone (the scoped invocation is a subset of the full suite), so
+	// cached kills stay valid no matter how the invocation was scoped.
 	return &mutationCacheSession{
 		cache:       loadMutationCache(cacheFile, currentMutationCacheMeta(categories, opts.testArgs)),
 		cacheFile:   cacheFile,
@@ -892,8 +998,11 @@ type mutationScan struct {
 
 // mutationCoveredSites detects sites in every selected file and keeps the
 // covered ones, capped at maxMutants (file order, then offset — the cap is
-// deterministic).
-func mutationCoveredSites(files []string, root string, cov map[string]*FileCoverage, categories map[string]bool, maxMutants int, excludes []string) (mutationScan, error) {
+// deterministic). In a diff run (diff non-nil) only sites whose containing
+// method intersects the changed lines are kept at all; everything outside
+// the diff is not a mutant of this change and is neither executed nor
+// counted.
+func mutationCoveredSites(files []string, root string, cov map[string]*FileCoverage, categories map[string]bool, maxMutants int, excludes []string, diff map[string]map[int]bool) (mutationScan, error) {
 	scan := mutationScan{
 		siteMethods: map[MutationSite]mutationMethodRef{},
 		liveKeys:    map[string]bool{},
@@ -905,7 +1014,7 @@ func mutationCoveredSites(files []string, root string, cov map[string]*FileCover
 		if matchesAnyGlob(relPath(root, file), excludes) {
 			continue
 		}
-		sites, refs, live, uncovered, err := mutationFileSites(file, root, cov, categories, maxMutants-len(scan.sites))
+		sites, refs, live, uncovered, err := mutationFileSites(file, root, cov, categories, maxMutants-len(scan.sites), diff)
 		if err != nil {
 			return mutationScan{}, err
 		}
@@ -924,7 +1033,7 @@ func mutationCoveredSites(files []string, root string, cov map[string]*FileCover
 // mutationFileSites detects one file's sites and keeps the covered ones up
 // to budget, returning them plus the file's uncovered count, every covered
 // site's method identity and every method's live key.
-func mutationFileSites(file, root string, cov map[string]*FileCoverage, categories map[string]bool, budget int) ([]MutationSite, map[MutationSite]mutationMethodRef, map[string]bool, int, error) {
+func mutationFileSites(file, root string, cov map[string]*FileCoverage, categories map[string]bool, budget int, diff map[string]map[int]bool) ([]MutationSite, map[MutationSite]mutationMethodRef, map[string]bool, int, error) {
 	src, err := os.ReadFile(file)
 	if err != nil {
 		return nil, nil, nil, 0, err
@@ -933,9 +1042,10 @@ func mutationFileSites(file, root string, cov map[string]*FileCoverage, categori
 	if err != nil {
 		return nil, nil, nil, 0, err
 	}
-	keyed := mutationMethodKeys(methods, relPath(root, file))
+	rel := relPath(root, file)
+	keyed := mutationMethodKeys(methods, rel)
 	executed, unexecuted := mutationCoverageFlags(cov, file)
-	covered, refs, uncovered := mutationSelectCovered(file, src, methods, categories, executed, unexecuted, keyed, budget)
+	covered, refs, uncovered := mutationSelectCovered(file, rel, src, methods, categories, executed, unexecuted, keyed, budget, diff)
 	live := make(map[string]bool, len(keyed))
 	for _, key := range keyed {
 		live[key] = true
@@ -964,11 +1074,16 @@ func mutationCoverageFlags(cov map[string]*FileCoverage, file string) (executed,
 
 // mutationSelectCovered walks the file's sites in offset order, keeping the
 // covered ones up to budget and binding each to its method's cache identity.
-func mutationSelectCovered(file string, src []byte, methods []MethodDescriptor, categories map[string]bool, executed, unexecuted map[int]bool, keyed map[string]string, budget int) ([]MutationSite, map[MutationSite]mutationMethodRef, int) {
+// Diff-excluded sites are dropped before the cap and before coverage so
+// they are neither executed nor counted.
+func mutationSelectCovered(file, rel string, src []byte, methods []MethodDescriptor, categories map[string]bool, executed, unexecuted map[int]bool, keyed map[string]string, budget int, diff map[string]map[int]bool) ([]MutationSite, map[MutationSite]mutationMethodRef, int) {
 	var covered []MutationSite
 	refs := map[MutationSite]mutationMethodRef{}
 	uncovered := 0
 	for _, site := range mutationParseSites(file, src, methods, categories) {
+		if !mutationInDiff(diff, rel, site, methods) {
+			continue
+		}
 		if len(covered) >= budget {
 			break
 		}
@@ -1083,6 +1198,9 @@ func mutationVerdict(result mutationRunResult, uncovered int, opts mutationOptio
 	score := result.score()
 	summary := fmt.Sprintf("mutation score %.1f%% (%d killed, %d survived, %d uncovered, %d cached)",
 		score*100, result.killedCount(), result.survivedCount(), uncovered, result.fromCacheCount())
+	if result.scopedCount > 0 {
+		summary += fmt.Sprintf("; test-scoped %d (%d re-confirmed killed)", result.scopedCount, result.confirmedCount)
+	}
 	summary += integritySuffix(result, root, stderr)
 	if score >= opts.minScore && result.survivedCount() <= opts.maxSurvivors {
 		fmt.Fprintln(stdout, summary)

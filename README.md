@@ -184,7 +184,17 @@ the summary plus a stderr warning: treat that run as suspect.
 `--test-args "test -run TestFoo ./pkg/..."` scopes the per-mutant
 invocation (default `test ./...` — the whole suite); scoping is your
 responsibility: a mutant is killed only if the scoped suite would kill
-it.
+it. `--diff-base <ref>` scopes execution to this change: sites run only
+when their containing method intersects the lines `git diff
+--unified=0 <ref>` changed — everything outside the diff is neither
+executed nor counted, so a per-PR run pays only for the changed methods'
+mutants. `--scope-tests` (default false) narrows each mutant's run to
+the derived test file of the mutated file (`dir/base.go` → `go test
+./dir` via its in-package `base_test.go`), falling back to `--test-args`
+when no candidate exists — a scoped kill is monotone and cached like any
+kill; a scoped survivor (timeouts included) is re-confirmed once against
+the full invocation and only the confirmed outcome is reported and
+cached (`test-scoped N (M re-confirmed killed)` in the summary).
 
 ### Flag ordering
 

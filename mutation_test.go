@@ -217,7 +217,7 @@ func TestMutationCoveredSitesFilterByCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scan, err := mutationCoveredSites([]string{hot}, dir, cov, mutationAllCategories(), 500, nil)
+	scan, err := mutationCoveredSites([]string{hot}, dir, cov, mutationAllCategories(), 500, nil, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -250,7 +250,7 @@ func TestMutationEngineMutatesOneAtATimeAndRestores(t *testing.T) {
 		t.Fatalf("got %d sites, want 1: %v", len(sites), sites)
 	}
 	var seen []string
-	runner := func(root string, timeout time.Duration) (mutantOutcome, error) {
+	runner := func(root string, timeout time.Duration, testArgs []string) (mutantOutcome, error) {
 		mutated, err := os.ReadFile(file)
 		if err != nil {
 			t.Error(err)
@@ -259,7 +259,7 @@ func TestMutationEngineMutatesOneAtATimeAndRestores(t *testing.T) {
 		seen = append(seen, string(mutated))
 		return mutantKilled, nil
 	}
-	result, err := runMutationEngine(dir, sites, time.Second, runner, nil)
+	result, err := runMutationEngine(dir, sites, time.Second, defaultMutationTestArgs, nil, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -290,12 +290,12 @@ func TestMutationRunResultScoreAndCategories(t *testing.T) {
 	}
 	sequence := []mutantOutcome{mutantSurvived, mutantTimeout, mutantKilled}
 	i := 0
-	runner := func(string, time.Duration) (mutantOutcome, error) {
+	runner := func(string, time.Duration, []string) (mutantOutcome, error) {
 		out := sequence[i]
 		i++
 		return out, nil
 	}
-	result, err := runMutationEngine(".", sites, time.Second, runner, nil)
+	result, err := runMutationEngine(".", sites, time.Second, defaultMutationTestArgs, nil, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
