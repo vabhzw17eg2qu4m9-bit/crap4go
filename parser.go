@@ -30,6 +30,7 @@ func ExtractMethods(filePath string, src []byte) ([]MethodDescriptor, error) {
 		return nil, err
 	}
 	var methods []MethodDescriptor
+	tf := fset.File(f.Pos())
 	for _, decl := range f.Decls {
 		fd, ok := decl.(*ast.FuncDecl)
 		if !ok || fd.Body == nil {
@@ -40,10 +41,12 @@ func ExtractMethods(filePath string, src []byte) ([]MethodDescriptor, error) {
 			name = "(" + recv + ")" + name
 		}
 		methods = append(methods, MethodDescriptor{
-			Name:       name,
-			StartLine:  fset.Position(fd.Pos()).Line,
-			EndLine:    fset.Position(fd.End()).Line,
-			Complexity: ComplexityOf(fd.Body),
+			Name:        name,
+			StartLine:   fset.Position(fd.Pos()).Line,
+			EndLine:     fset.Position(fd.End()).Line,
+			Complexity:  ComplexityOf(fd.Body),
+			StartOffset: tf.Offset(fd.Pos()),
+			EndOffset:   tf.Offset(fd.End()),
 		})
 	}
 	return methods, nil

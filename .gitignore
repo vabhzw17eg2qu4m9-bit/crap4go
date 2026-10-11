@@ -8,3 +8,6 @@ coverage.out
 # Profiling artifacts
 profile-reports/
 .crap_profile_temp/
+
+# Mutation cache (crap4go)
+.crap-mutation-cache.json

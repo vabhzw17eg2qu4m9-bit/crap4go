@@ -40,7 +40,8 @@ Subcommands (must be the first argument):
   crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
   crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
                     [--timeout-seconds N] [--max-mutants N]
-                    [--operators LIST] [--exclude GLOB]... [paths...]
+                    [--operators LIST] [--exclude GLOB]... [--cache]
+                    [--test-args ARGS] [paths...]
                                    Mutation-test covered sites; exit 2 on survivors
   crap4go skill                    Print the crap4go profiling skill for AI agents
 

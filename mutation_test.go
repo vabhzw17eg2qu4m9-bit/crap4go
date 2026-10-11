@@ -217,12 +217,13 @@ func TestMutationCoveredSitesFilterByCoverage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sites, uncovered, err := mutationCoveredSites([]string{hot}, dir, cov, mutationAllCategories(), 500, nil)
+	scan, err := mutationCoveredSites([]string{hot}, dir, cov, mutationAllCategories(), 500, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(sites) != 2 || uncovered != 2 {
-		t.Fatalf("got %d covered sites (%v), %d uncovered; want 2 covered, 2 uncovered", len(sites), sites, uncovered)
+	sites := scan.sites
+	if len(sites) != 2 || scan.uncovered != 2 {
+		t.Fatalf("got %d covered sites (%v), %d uncovered; want 2 covered, 2 uncovered", len(sites), sites, scan.uncovered)
 	}
 	for _, s := range sites {
 		if s.Method != "Hot" {
@@ -258,7 +259,7 @@ func TestMutationEngineMutatesOneAtATimeAndRestores(t *testing.T) {
 		seen = append(seen, string(mutated))
 		return mutantKilled, nil
 	}
-	result, err := runMutationEngine(dir, sites, time.Second, runner)
+	result, err := runMutationEngine(dir, sites, time.Second, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -294,7 +295,7 @@ func TestMutationRunResultScoreAndCategories(t *testing.T) {
 		i++
 		return out, nil
 	}
-	result, err := runMutationEngine(".", sites, time.Second, runner)
+	result, err := runMutationEngine(".", sites, time.Second, runner, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -383,7 +384,7 @@ func TestMutationCommandKillsEverything(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
 	}
-	if want := "mutation score 100.0% (3 killed, 0 survived, 2 uncovered)"; !strings.Contains(out.String(), want) {
+	if want := "mutation score 100.0% (3 killed, 0 survived, 2 uncovered, 0 cached)"; !strings.Contains(out.String(), want) {
 		t.Errorf("summary missing %q:\n%s", want, out.String())
 	}
 }
@@ -412,7 +413,7 @@ func TestAdd(t *testing.T) {
 	if !strings.Contains(stdout, "calc.go:") || !strings.Contains(stdout, "survived boundary mutant `>` -> `>=`") {
 		t.Errorf("survivor violation missing from:\n%s", stdout)
 	}
-	if !strings.Contains(stdout, "mutation score 66.7% (2 killed, 1 survived, 1 uncovered)") {
+	if !strings.Contains(stdout, "mutation score 66.7% (2 killed, 1 survived, 1 uncovered, 0 cached)") {
 		t.Errorf("summary missing:\n%s", stdout)
 	}
 	if !strings.Contains(stdout, "survivors by category: boundary=1") {
@@ -435,7 +436,7 @@ func TestMutationCommandMaxMutantsCapsExecution(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("exit %d, want 0\nstdout:\n%s\nstderr:\n%s", code, out.String(), errOut.String())
 	}
-	if want := "mutation score 100.0% (1 killed, 0 survived, 0 uncovered)"; !strings.Contains(out.String(), want) {
+	if want := "mutation score 100.0% (1 killed, 0 survived, 0 uncovered, 0 cached)"; !strings.Contains(out.String(), want) {
 		t.Errorf("summary missing %q:\n%s", want, out.String())
 	}
 }
@@ -584,7 +585,7 @@ func TestA(t *testing.T) {
 }
 `,
 		})
-		outcome, err := mutantTestRunnerOS(root, 30*time.Second)
+		outcome, err := mutantTestRunnerOS(root, 30*time.Second, defaultMutationTestArgs)
 		if err != nil || outcome != mutantSurvived {
 			t.Errorf("got %v, %v; want survived", outcome, err)
 		}
@@ -603,7 +604,7 @@ func TestA(t *testing.T) {
 }
 `,
 		})
-		outcome, err := mutantTestRunnerOS(root, 30*time.Second)
+		outcome, err := mutantTestRunnerOS(root, 30*time.Second, defaultMutationTestArgs)
 		if err != nil || outcome != mutantKilled {
 			t.Errorf("got %v, %v; want killed", outcome, err)
 		}
@@ -613,7 +614,7 @@ func TestA(t *testing.T) {
 			"a.go":      "package mut\n\nvar Broken int = \"not an int\"\n",
 			"a_test.go": "package mut\n",
 		})
-		outcome, err := mutantTestRunnerOS(root, 30*time.Second)
+		outcome, err := mutantTestRunnerOS(root, 30*time.Second, defaultMutationTestArgs)
 		if err != nil || outcome != mutantKilled {
 			t.Errorf("got %v, %v; want killed", outcome, err)
 		}
@@ -633,14 +634,14 @@ func TestA(t *testing.T) {
 }
 `,
 		})
-		outcome, err := mutantTestRunnerOS(root, 2*time.Second)
+		outcome, err := mutantTestRunnerOS(root, 2*time.Second, defaultMutationTestArgs)
 		if err != nil || outcome != mutantTimeout {
 			t.Errorf("got %v, %v; want timeout", outcome, err)
 		}
 	})
 	t.Run("spawn failure is unavailable", func(t *testing.T) {
 		t.Setenv("PATH", "")
-		_, err := mutantTestRunnerOS(t.TempDir(), time.Second)
+		_, err := mutantTestRunnerOS(t.TempDir(), time.Second, defaultMutationTestArgs)
 		var execErr *exec.Error
 		if !errors.As(err, &execErr) {
 			t.Errorf("err %v, want *exec.Error", err)
