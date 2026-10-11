@@ -62,6 +62,15 @@ func lookupCoverage(coverage map[string]*FileCoverage, sourcePath string) *FileC
 
 // SortMetrics orders metrics by CRAP score descending with N/A entries last.
 // Ties break by File ascending, then StartLine ascending, for stable reports.
+//
+// The comparison constants on unequal-operand paths are equivalent-mutant
+// territory: `*a > *b` executes only when the scores differ, and tieBreak's
+// `a.File < b.File` only when the file paths differ — on unequal operands
+// `>` and `>=` (resp. `<` and `<=`) coincide, so those boundary mutants are
+// unobservable (verified: each mutant passes the full suite). The final
+// `a.StartLine < b.StartLine` comparison IS load-bearing: sort.SliceStable
+// keeps entries with identical keys in input order only while the comparator
+// stays irreflexive, so mutating it to `<=` reorders identical-key entries.
 func SortMetrics(m []MethodMetric) {
 	sort.SliceStable(m, func(i, j int) bool {
 		a, b := m[i].CrapScore, m[j].CrapScore
