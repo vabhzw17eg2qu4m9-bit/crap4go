@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.10.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.9.0...v0.10.0) (2026-10-11)
+
+
+### Features
+
+* **mutation:** digest-incremental cache + test_args scoping + tree-integrity check — port of upstream crap4dart 16d9c4c+8b2e8e8 ([#28](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/28)) ([a73467f](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/a73467fbf1e4e95d7faca89d37f3c110e9f25eda))
+
 ## [0.9.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.8.0...v0.9.0) (2026-10-11)
 
 
