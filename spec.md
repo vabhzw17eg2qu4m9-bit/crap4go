@@ -46,6 +46,10 @@ crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
                                  [--exclude GLOB]... [--source PATH]...
                                  [--ignore-locals] [--ignore-literals] [paths...]
                                  Flag files over N% duplicated lines; exit 2
+crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
+                                 [--timeout-seconds N] [--max-mutants N]
+                                 [--operators LIST] [--exclude GLOB]... [paths...]
+                                 Mutation-test covered sites; exit 2 on survivors
 crap4go skill                    Print the crap4go profiling skill for AI agents
 ```
 
@@ -55,7 +59,7 @@ combined). Unknown flags are usage errors.
 **Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`duplicates`)
+`duplicates`, `mutation`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -291,7 +295,14 @@ spec are ported with Go adaptations as described below; `magic-constants`
 comes from 0.6.0 (§11.13) with the 0.7–0.9 precision fixes,
 `test-assertions` (§11.15) and `folder-structure` (§11.16) from 0.9, and
 `duplicates` (§11.11) from 0.2.0 with 0.2.1's whole-file tokenization and
-the per-gate `sources` key from dc64e9c.
+the per-gate `sources` key from dc64e9c. `mutation` (§11.22) comes from
+c865ec3 (the unclebob/mutator research): the operator table, coverage
+gating, per-mutant test re-run and survivor violations port directly —
+Dart's `/`→`~/` row is dropped (Go integer division already truncates),
+`true`/`false` match predefined identifiers in expression position, the
+LCOV per-line hit map becomes the block-based cover profile flattened to
+per-line flags, and the yaml `enabled: false` knob becomes "subcommand
+only" (the analyze flow never runs gates).
 Not applicable upstream changes: 0.5.2's profile part-of fix is Dart-only;
 0.6.0's baseline/severity/config knobs have no counterpart (no gate
 framework); 0.6.1's internal constants refactor changes no behavior;
@@ -552,13 +563,68 @@ plus a summary: pass `N files, P.PP% duplicated lines`, fail
 Exit code 2 iff there are violations; `no files with enough tokens` with
 exit 0 when no file clears the token minimum.
 
-## 21. `skill`
+## 21. `mutation`
+
+Go adaptation of crap4dart c865ec3's `mutation` gate (§11.22, adapted from
+the unclebob/mutator research conclusions):
+
+```
+crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
+                 [--timeout-seconds N] [--max-mutants N]
+                 [--operators LIST] [--exclude GLOB]... [paths...]
+```
+
+A declarative, category-tagged operator table is matched on parsed
+(unresolved) ASTs; replacement offsets come from go/token positions, never
+regex:
+
+- `arithmetic`: `+`↔`-`, `*`↔`/` (Dart's `/`→`~/` has no Go counterpart —
+  Go `/` on integers already truncates)
+- `boundary`: `>`↔`>=`, `<`↔`<=`, `>`↔`<`, `>=`↔`<=`
+- `equality`: `==`↔`!=`
+- `logical`: `&&`↔`||`
+- `boolean`: `true`↔`false` (predefined identifiers in expression position)
+- `constant`: integer `0`↔`1`, `-1`→`0` (the inner `1` also yields its own
+  `1`→`0` site, as upstream's child recursion does)
+- `unary`: delete a `!` prefix
+
+Only executable code is walked: declaration positions (field names, labels,
+selector fields) can never be literal sites. Each match is a mutation site
+`{file, line, method, category, original, mutant}`.
+
+A site whose containing method has no executed line — or whose line has no
+positive cover-profile hit when no method contains it — is `uncovered`:
+excluded from the score denominator and never executed. Every covered site
+is mutated one at a time (one textual replacement at its exact token span,
+the file restored after each mutant) and `go test ./...` re-runs against it:
+a non-zero exit kills the mutant — compile-error mutants die the same way
+because `go test` refuses to run a broken build — while a timeout counts as
+survived (the suite did not kill the mutant deterministically).
+
+The mutation score is `killed / (killed + survived)`; uncovered sites are
+excluded. The gate fails — printing one violation line per surviving mutant
+(`<path>:<line>: survived <category> mutant `<orig>` -> `<mutant>`[ in
+<method>]` plus a summary `mutation score S.S% (K killed, S survived, U
+uncovered); survivors by category: <category>=<count>...`) — when the score
+is below `--min-score` (default 0.8) or more than `--max-survivors`
+(default 0) mutants survive; exit code 2. Without coverage data, without
+`*_test.go` files, or when `go` cannot spawn, the gate skips itself with
+exit 0. `--timeout-seconds` (default 60) bounds each mutant,
+`--max-mutants` (default 500) caps the executed sites deterministically
+(file order, then offset), `--operators` selects a comma-separated category
+subset, and `--exclude GLOB` (repeatable) skips matching project-relative
+paths (default: none — the standard selection already skips `*_test.go` and
+`vendor/`). The gate is disabled by default: it never runs in the analyze
+flow and only executes when invoked as a subcommand — mutation testing runs
+the whole suite once per mutant, so invoke it deliberately on fast suites.
+
+## 22. `skill`
 
 Prints a Go-adapted version of crap4dart's profiling skill (when to profile,
 how the instrumentation works, how to read the report), ending with one line
 on installing it as an agent skill. Always exits 0.
 
-## 22. Threshold
+## 23. Threshold
 
 The threshold defaults to `8.0` and is overridable with `--threshold`. After
 the report is printed, the maximum numeric CRAP is compared against it; if
@@ -566,7 +632,7 @@ the report is printed, the maximum numeric CRAP is compared against it; if
 to stderr and the process exits 2. Otherwise the process exits 0. A threshold
 of `0` or less is a usage error.
 
-## 23. Exit codes
+## 24. Exit codes
 
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
@@ -576,15 +642,16 @@ of `0` or less is a usage error.
 |      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
 |      | `banned-imports`, `magic-constants`, `test-assertions`,                  |
-|      | `duplicates`, `folder-structure`). (Also reported on stderr.)           |
+|      | `duplicates`, `folder-structure`, `mutation`). (Also reported on        |
+|      | stderr.)                                                                |
 
-## 24. `--run-tests`
+## 25. `--run-tests`
 
 Runs `go test ./... -coverprofile=coverage.out -covermode=atomic` in the
 project root, streaming stdout/stderr through. On non-zero exit, the error is
 printed to stderr and the process exits 1.
 
-## 25. Non-goals
+## 26. Non-goals
 
 - No type-checking or build verification — parsing only.
 - No HTML/branch coverage reports — only the statement-level cover profile.
