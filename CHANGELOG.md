@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.10.0...v0.11.0) (2026-10-11)
+
+
+### Features
+
+* **mutation:** diff-scoped execution + scope_tests — port of upstream crap4dart 8228585 ([#30](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/30)) ([cb316c2](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/cb316c2e2b7809e96e7b872d7bc7d9aa6c8b9e66))
+
 ## [0.10.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.9.0...v0.10.0) (2026-10-11)
 
 
