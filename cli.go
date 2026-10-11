@@ -38,6 +38,10 @@ Subcommands (must be the first argument):
   crap4go magic-constants [paths...] Flag magic literals (hex colors, repeats); exit 2
   crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
   crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
+  crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
+                    [--timeout-seconds N] [--max-mutants N]
+                    [--operators LIST] [--exclude GLOB]... [paths...]
+                                   Mutation-test covered sites; exit 2 on survivors
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -150,6 +154,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"duplicates":       RunDuplicatesCommand,
 	"test-assertions":  RunTestAssertionsCommand,
 	"folder-structure": RunFolderStructureCommand,
+	"mutation":         RunMutationCommand,
 }
 
 // runSubcommand executes a subcommand when args[0] exactly matches a known

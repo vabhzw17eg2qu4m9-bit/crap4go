@@ -77,6 +77,7 @@ crap4go magic-constants           # flag hex colors outside consts and repeated 
 crap4go test-assertions           # flag tests with no fail-capable calls (t.Error/Fatal/..., panic)
 crap4go folder-structure           # flag dirs with loose .go files at the module root
 crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks across modules
+crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on survivors
 crap4go skill                     # print the profiling skill for AI agents
 ```
 
@@ -149,6 +150,23 @@ lost when enclosing scopes shift placeholder numbering.
 `--ignore-literals` replaces string and numeric literals with `$STR`/
 `$NUM` placeholders. Both are off by default: the default mode reports
 exact copy-paste only.
+
+`mutation` (ported from crap4dart c865ec3, adapted from the
+unclebob/mutator research) is mutation testing: a declarative operator
+table (`arithmetic` `+`↔`-`, `*`↔`/`; `boundary` `>`↔`>=`, `<`↔`<=`,
+`>`↔`<`, `>=`↔`<=`; `equality` `==`↔`!=`; `logical` `&&`↔`||`; `boolean`
+`true`↔`false`; `constant` `0`↔`1`, `-1`→`0`; `unary` delete `!`) is
+matched on the parsed AST — offsets come from go/token positions, never
+regex. Sites in unexecuted methods are `uncovered` and excluded from the
+score; every covered site is mutated one at a time and `go test ./...`
+re-runs per mutant (non-zero exit kills the mutant — compile errors
+included; a timeout counts as survived), with the file restored after
+each mutant. It fails below `--min-score` (default 0.8) or above
+`--max-survivors` (default 0), printing one violation line per surviving
+mutant; skips (exit 0) without coverage data or test files. Expensive by
+nature (one full test run per mutant) it is opt-in only — the analyze
+flow never runs it — with `--timeout-seconds` (60), `--max-mutants` (500)
+and `--operators` capping the work.
 
 ### Flag ordering
 
