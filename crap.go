@@ -5,12 +5,16 @@ import (
 )
 
 // MethodDescriptor describes a single Go function or method discovered by
-// parsing source. StartLine and EndLine are 1-based, inclusive.
+// parsing source. StartLine and EndLine are 1-based, inclusive;
+// StartOffset and EndOffset are the declaration's byte span in the parsed
+// source (the mutation cache digests this exact text).
 type MethodDescriptor struct {
-	Name       string
-	StartLine  int
-	EndLine    int
-	Complexity int
+	Name        string
+	StartLine   int
+	EndLine     int
+	Complexity  int
+	StartOffset int
+	EndOffset   int
 }
 
 // MethodMetric is the analyzed result for one method: its complexity plus

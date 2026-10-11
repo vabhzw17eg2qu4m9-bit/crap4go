@@ -168,6 +168,24 @@ nature (one full test run per mutant) it is opt-in only — the analyze
 flow never runs it — with `--timeout-seconds` (60), `--max-mutants` (500)
 and `--operators` capping the work.
 
+The digest-incremental cache (ported from crap4dart 16d9c4c, on by
+default; `--cache=false` disables) persists per-method outcomes to
+`.crap-mutation-cache.json` at the project root: killed mutants of
+methods whose exact source span (FNV-1a digest) is unchanged since the
+last run are replayed, not re-executed, and reported as `cached` in the
+summary; survivors always re-run (the suite may have improved); coverage
+gating is re-derived from fresh coverage every run; a config change
+(operators, `--test-args`, tool version) wipes the cache; entries of
+vanished methods are pruned. The end-of-run integrity check
+(crap4dart 8b2e8e8) snapshots every file before the loop and re-verifies
+the tree after it — a file that drifted (external edit, killed process
+between apply and restore) is re-restored and surfaced as `INTEGRITY` in
+the summary plus a stderr warning: treat that run as suspect.
+`--test-args "test -run TestFoo ./pkg/..."` scopes the per-mutant
+invocation (default `test ./...` — the whole suite); scoping is your
+responsibility: a mutant is killed only if the scoped suite would kill
+it.
+
 ### Flag ordering
 
 `crap4go` uses Go's standard `flag` package, which **stops parsing at the first

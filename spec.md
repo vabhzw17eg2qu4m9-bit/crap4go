@@ -571,7 +571,8 @@ the unclebob/mutator research conclusions):
 ```
 crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
                  [--timeout-seconds N] [--max-mutants N]
-                 [--operators LIST] [--exclude GLOB]... [paths...]
+                 [--operators LIST] [--exclude GLOB]... [--cache]
+                 [--test-args ARGS] [paths...]
 ```
 
 A declarative, category-tagged operator table is matched on parsed
@@ -617,6 +618,40 @@ paths (default: none — the standard selection already skips `*_test.go` and
 `vendor/`). The gate is disabled by default: it never runs in the analyze
 flow and only executes when invoked as a subcommand — mutation testing runs
 the whole suite once per mutant, so invoke it deliberately on fast suites.
+
+Digest-incremental cache (port of crap4dart 16d9c4c): when `--cache` is on
+(the default; `--cache=false` disables), per-method outcomes persist to
+`<projectRoot>/.crap-mutation-cache.json` — a versioned JSON envelope
+`{version, meta, methods}` keyed by method identity (project-relative file +
+method name) and a digest (FNV-1a 64-bit via hash/fnv, zero new
+dependencies) of the method's exact AST source span. On later runs, a
+covered mutant whose method digest and site identity (method-relative
+offset, category, original, mutant) match a previously `killed` outcome is
+replayed — counted killed, reported as `cached` in the summary — and never
+re-executed; survivors are always re-executed, because the test suite may
+have improved. Changed or new methods re-execute fully; coverage gating is
+re-derived from the run's fresh coverage profile and is never cached.
+Offsets are stored method-relative, so an edit in an earlier method of the
+same file invalidates only that method. The `meta` guard (tool version,
+enabled operator categories, `test_args`) wipes the cache on any mismatch,
+as do a missing, corrupt or outdated-version file. Entries of deleted or
+excluded files are pruned after each run.
+
+End-of-run tree integrity check (port of crap4dart 8b2e8e8): the engine
+snapshots every file it will mutate before the loop and re-verifies the
+whole tree in an outer finally — even when the loop died mid-mutant. A file
+whose content drifted from its snapshot (external edit, killed process
+between apply and restore) is re-restored and surfaced as
+`; INTEGRITY: re-restored after run: <paths>` in the summary plus a stderr
+warning: the tree is healed, but the run must be treated as suspect.
+
+`--test-args "test -run TestFoo ./pkg/..."` (default `test ./...` — the
+whole suite, matching upstream's `['test']`) is the full per-mutant test
+invocation, so consumers can scope per-mutant runs to relevant test paths
+on large repos; scoping is the consumer's responsibility — a mutant is
+killed only if the scoped suite would kill it. Validation is strict: an
+empty (all-whitespace) value is a usage error; args are split on
+whitespace.
 
 ## 22. `skill`
 

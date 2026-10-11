@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
@@ -10,6 +11,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -22,6 +24,12 @@ const (
 	defaultMutationTimeoutSeconds = 60
 	defaultMutationMaxMutants     = 500
 )
+
+// defaultMutationTestArgs is the full per-mutant test invocation: the whole
+// suite, like upstream's ['test']. Scoping it to relevant test paths is the
+// consumer's responsibility: a mutant is killed only if the scoped suite
+// would kill it.
+var defaultMutationTestArgs = []string{"test", "./..."}
 
 // mutationOperator is one row of the declarative operator table: replacing
 // original with mutant produces one mutant, tagged category. Adapted from the
@@ -404,15 +412,46 @@ const (
 	mutantTimeout
 )
 
-// mutationSiteOutcome pairs a site with its per-mutant outcome.
+// cacheStatus is the outcome's name in the mutation cache.
+func (o mutantOutcome) cacheStatus() string {
+	switch o {
+	case mutantKilled:
+		return "killed"
+	case mutantSurvived:
+		return "survived"
+	default:
+		return "timeout"
+	}
+}
+
+// mutationSiteOutcome pairs a site with its per-mutant outcome, and
+// whether the kill was replayed from the cache instead of executed.
 type mutationSiteOutcome struct {
-	site    MutationSite
-	outcome mutantOutcome
+	site      MutationSite
+	outcome   mutantOutcome
+	fromCache bool
 }
 
 // mutationRunResult holds every per-site outcome of one engine invocation.
+// integrityViolations lists files that did NOT match their pre-run
+// snapshot after the loop and had to be re-restored by the end-of-run
+// integrity check — the tree is healed, but the run must be treated as
+// suspect.
 type mutationRunResult struct {
-	outcomes []mutationSiteOutcome
+	outcomes            []mutationSiteOutcome
+	integrityViolations []string
+}
+
+// fromCacheCount counts kills replayed from the digest cache instead of
+// re-executed.
+func (r mutationRunResult) fromCacheCount() int {
+	n := 0
+	for _, o := range r.outcomes {
+		if o.fromCache {
+			n++
+		}
+	}
+	return n
 }
 
 // killedCount counts mutants the suite killed (compile errors included).
@@ -456,18 +495,88 @@ func (r mutationRunResult) survivorsByCategory() map[string]int {
 type mutantTestRunner func(projectRoot string, timeout time.Duration) (mutantOutcome, error)
 
 // runMutationEngine mutates every site one at a time and runs the project's
-// tests against each mutant, restoring the file afterwards. The first
-// spawn/unavailable error propagates to the caller.
-func runMutationEngine(projectRoot string, sites []MutationSite, timeout time.Duration, runner mutantTestRunner) (mutationRunResult, error) {
-	var outcomes []mutationSiteOutcome
-	for _, site := range sites {
-		outcome, err := runSingleMutant(site, projectRoot, timeout, runner)
-		if err != nil {
-			return mutationRunResult{}, err
-		}
-		outcomes = append(outcomes, mutationSiteOutcome{site: site, outcome: outcome})
+// tests against each mutant, restoring the file afterwards. With a
+// mutationCacheSession, mutants of unchanged methods whose previous outcome
+// was killed are replayed from the cache (counted killed, marked fromCache);
+// survivors are always re-executed. The merged cache is persisted after the
+// run. The first spawn/unavailable error propagates to the caller.
+func runMutationEngine(projectRoot string, sites []MutationSite, timeout time.Duration, runner mutantTestRunner, caching *mutationCacheSession) (result mutationRunResult, err error) {
+	// Safety net: snapshot every file about to be mutated so the end of the
+	// run can prove the tree is byte-identical to the start. A real run
+	// once ended with a leftover mutant on disk despite the per-site
+	// finally-restore; silent tree corruption must become a loud,
+	// self-healing error instead.
+	originals, err := snapshotMutationFiles(sites)
+	if err != nil {
+		return mutationRunResult{}, err
 	}
-	return mutationRunResult{outcomes: outcomes}, nil
+	defer func() { result.integrityViolations = verifyMutationTree(originals) }()
+	fresh := map[string]mutationFreshMethod{}
+	for _, site := range sites {
+		outcome, runErr := runMutationSite(site, projectRoot, timeout, runner, caching, fresh)
+		if runErr != nil {
+			return mutationRunResult{}, runErr
+		}
+		result.outcomes = append(result.outcomes, outcome)
+	}
+	if err := persistMutationCache(caching, fresh); err != nil {
+		return mutationRunResult{}, err
+	}
+	return result, nil
+}
+
+// runMutationSite executes or replays one site: a kill of an unchanged
+// method replays from the cache, everything else runs the test suite; the
+// outcome is accumulated for the cache merge either way.
+func runMutationSite(site MutationSite, projectRoot string, timeout time.Duration, runner mutantTestRunner, caching *mutationCacheSession, fresh map[string]mutationFreshMethod) (mutationSiteOutcome, error) {
+	ref, known := caching.ref(site)
+	if known {
+		if replayed, ok := caching.cache.replayKill(ref, site); ok {
+			accumulateMutationOutcome(fresh, ref, replayed)
+			return mutationSiteOutcome{site: site, outcome: mutantKilled, fromCache: true}, nil
+		}
+	}
+	outcome, err := runSingleMutant(site, projectRoot, timeout, runner)
+	if err != nil {
+		return mutationSiteOutcome{}, err
+	}
+	if known {
+		accumulateMutationOutcome(fresh, ref, cachedMutationOutcomeFor(site, outcome, ref))
+	}
+	return mutationSiteOutcome{site: site, outcome: outcome}, nil
+}
+
+// snapshotMutationFiles reads the current content of every file sites
+// touch.
+func snapshotMutationFiles(sites []MutationSite) (map[string][]byte, error) {
+	originals := map[string][]byte{}
+	for _, site := range sites {
+		if _, ok := originals[site.File]; ok {
+			continue
+		}
+		src, err := os.ReadFile(site.File)
+		if err != nil {
+			return nil, err
+		}
+		originals[site.File] = src
+	}
+	return originals, nil
+}
+
+// verifyMutationTree restores any file whose on-disk content drifted from
+// its snapshot; returns the paths that had to be re-restored (empty when
+// healthy), sorted for deterministic reporting.
+func verifyMutationTree(originals map[string][]byte) []string {
+	var violations []string
+	for path, want := range originals {
+		current, err := os.ReadFile(path)
+		if err != nil || !bytes.Equal(current, want) {
+			_ = os.WriteFile(path, want, 0o644)
+			violations = append(violations, path)
+		}
+	}
+	sort.Strings(violations)
+	return violations
 }
 
 // runSingleMutant applies one mutation in place, runs the test runner, and
@@ -484,10 +593,45 @@ func runSingleMutant(site MutationSite, projectRoot string, timeout time.Duratio
 	return runner(projectRoot, timeout)
 }
 
-// mutantTestRunnerOS is the default per-mutant runner: `go test ./...` with a
-// kill-on-timeout guard. Discarded output keeps the child from blocking.
-func mutantTestRunnerOS(projectRoot string, timeout time.Duration) (mutantOutcome, error) {
-	cmd := exec.Command("go", "test", "./...")
+// accumulateMutationOutcome adds one outcome to the run's fresh entry for
+// the site's method.
+func accumulateMutationOutcome(fresh map[string]mutationFreshMethod, ref mutationMethodRef, outcome cachedMutationOutcome) {
+	entry, ok := fresh[ref.key]
+	if !ok {
+		entry = mutationFreshMethod{digest: ref.digest}
+	}
+	entry.outcomes = append(entry.outcomes, outcome)
+	fresh[ref.key] = entry
+}
+
+// cachedMutationOutcomeFor is the cache entry of one executed site; the
+// offset is stored relative to the containing method's start.
+func cachedMutationOutcomeFor(site MutationSite, outcome mutantOutcome, ref mutationMethodRef) cachedMutationOutcome {
+	return cachedMutationOutcome{
+		Offset:   site.Offset - ref.start,
+		Line:     site.Line,
+		Category: site.Category,
+		Original: site.Original,
+		Mutant:   site.Mutant,
+		Status:   outcome.cacheStatus(),
+	}
+}
+
+// persistMutationCache merges the run's fresh outcomes into the on-disk
+// cache; a nil session (cache disabled) is a no-op.
+func persistMutationCache(caching *mutationCacheSession, fresh map[string]mutationFreshMethod) error {
+	if caching == nil {
+		return nil
+	}
+	caching.cache.mergeRun(fresh, caching.liveKeys)
+	return caching.cache.save(caching.cacheFile)
+}
+
+// mutantTestRunnerOS is the default per-mutant runner: the project's test
+// command (`go <testArgs...>`) with a kill-on-timeout guard. Discarded
+// output keeps the child from blocking.
+func mutantTestRunnerOS(projectRoot string, timeout time.Duration, testArgs []string) (mutantOutcome, error) {
+	cmd := exec.Command("go", testArgs...)
 	cmd.Dir = projectRoot
 	if err := cmd.Start(); err != nil {
 		return 0, fmt.Errorf("go test unavailable: %w", err)
@@ -521,18 +665,23 @@ type mutationOptions struct {
 	operators      []string
 	excludes       []string
 	paths          []string
+	cache          bool
+	testArgs       []string
 }
 
 // RunMutationCommand implements `crap4go mutation [--coverage PATH]
 // [--min-score F] [--max-survivors N] [--timeout-seconds N] [--max-mutants N]
-// [--operators LIST] [--exclude GLOB]... [paths...]`: it detects mutation
-// sites on the parsed ASTs of the selection, keeps only sites covered by the
-// coverage profile, and mutates them one at a time, re-running `go test`
-// per mutant. A non-zero exit kills the mutant (compile errors included), a
-// timeout counts as survived. Exit code 2 when the score is below --min-score
-// or more than --max-survivors mutants survive; one violation line is printed
-// per surviving mutant. Skips (exit 0) when there is no coverage data, no
-// test files, or `go` is unavailable.
+// [--operators LIST] [--exclude GLOB]... [--cache] [--test-args ARG]...
+// [paths...]`: it detects mutation sites on the parsed ASTs of the
+// selection, keeps only sites covered by the coverage profile, and mutates
+// them one at a time, re-running `go <test-args>` per mutant. Killed mutants
+// of methods whose source span is unchanged replay from the digest cache
+// (.crap-mutation-cache.json); survivors always re-execute. A non-zero exit
+// kills the mutant (compile errors included), a timeout counts as survived.
+// Exit code 2 when the score is below --min-score or more than
+// --max-survivors mutants survive; one violation line is printed per
+// surviving mutant. Skips (exit 0) when there is no coverage data, no test
+// files, or `go` is unavailable.
 func RunMutationCommand(args []string, root string, stdout, stderr io.Writer) int {
 	opts, code, ok := parseMutationFlags(args, stderr)
 	if !ok {
@@ -553,12 +702,16 @@ func parseMutationFlags(args []string, stderr io.Writer) (mutationOptions, int, 
 		maxSurvivors:   defaultMutationMaxSurvivors,
 		timeoutSeconds: defaultMutationTimeoutSeconds,
 		maxMutants:     defaultMutationMaxMutants,
+		cache:          true,
+		testArgs:       defaultMutationTestArgs,
 	}
 	fs.StringVar(&opts.coveragePath, "coverage", opts.coveragePath, "coverage profile path")
 	fs.Float64Var(&opts.minScore, "min-score", opts.minScore, "minimum mutation score (killed/(killed+survived))")
 	fs.IntVar(&opts.maxSurvivors, "max-survivors", opts.maxSurvivors, "maximum tolerated surviving mutants")
 	fs.IntVar(&opts.timeoutSeconds, "timeout-seconds", opts.timeoutSeconds, "per-mutant test timeout; a timeout counts as survived")
 	fs.IntVar(&opts.maxMutants, "max-mutants", opts.maxMutants, "cap on executed covered sites (file order, then offset)")
+	fs.BoolVar(&opts.cache, "cache", opts.cache, "replay kills of unchanged methods from .crap-mutation-cache.json")
+	testArgs := fs.String("test-args", strings.Join(defaultMutationTestArgs, " "), "per-mutant `go` test invocation args (space-separated)")
 	var operators string
 	fs.StringVar(&operators, "operators", "", "comma-separated operator categories (default: all)")
 	excludes := &stringSlice{}
@@ -568,6 +721,11 @@ func parseMutationFlags(args []string, stderr io.Writer) (mutationOptions, int, 
 	}
 	if !validMutationOptions(opts) {
 		fmt.Fprintln(stderr, "--min-score, --max-survivors, --max-mutants and --timeout-seconds must be valid")
+		return mutationOptions{}, 1, false
+	}
+	opts.testArgs = strings.Fields(*testArgs)
+	if len(opts.testArgs) == 0 {
+		fmt.Fprintln(stderr, "--test-args must not be empty")
 		return mutationOptions{}, 1, false
 	}
 	if operators != "" {
@@ -596,21 +754,40 @@ func runMutationGate(opts mutationOptions, root string, stdout, stderr io.Writer
 	if skip {
 		return code
 	}
-	sites, uncovered, err := mutationCoveredSites(files, root, cov, categories, opts.maxMutants, opts.excludes)
+	scan, err := mutationCoveredSites(files, root, cov, categories, opts.maxMutants, opts.excludes)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	if len(sites) == 0 {
-		printNoSites(uncovered, stdout)
+	if len(scan.sites) == 0 {
+		printNoSites(scan.uncovered, stdout)
 		return 0
 	}
 	timeout := time.Duration(opts.timeoutSeconds) * time.Second
-	result, err := runMutationEngine(root, sites, timeout, mutantTestRunnerOS)
+	runner := func(projectRoot string, runTimeout time.Duration) (mutantOutcome, error) {
+		return mutantTestRunnerOS(projectRoot, runTimeout, opts.testArgs)
+	}
+	result, err := runMutationEngine(root, scan.sites, timeout, runner, openMutationCache(root, opts, scan, categories))
 	if err != nil {
 		return mutationEngineError(err, stdout, stderr)
 	}
-	return mutationVerdict(result, uncovered, opts, root, stdout)
+	return mutationVerdict(result, scan.uncovered, opts, root, stdout, stderr)
+}
+
+// openMutationCache opens the digest cache when enabled: it loads the file
+// at the project root (a fresh empty cache on any mismatch) and binds it to
+// the scan's site identities.
+func openMutationCache(root string, opts mutationOptions, scan mutationScan, categories map[string]bool) *mutationCacheSession {
+	if !opts.cache {
+		return nil
+	}
+	cacheFile := filepath.Join(root, mutationCacheFileName)
+	return &mutationCacheSession{
+		cache:       loadMutationCache(cacheFile, currentMutationCacheMeta(categories, opts.testArgs)),
+		cacheFile:   cacheFile,
+		siteMethods: scan.siteMethods,
+		liveKeys:    scan.liveKeys,
+	}
 }
 
 // mutationPrereqs loads the coverage profile and checks the project has test
@@ -702,45 +879,94 @@ func excludeMutationFiles(files []string, root string, patterns []string) []stri
 	return kept
 }
 
+// mutationScan is the result of scanning the scope for covered mutation
+// sites, plus the cache identities needed for digest-incremental replay:
+// every covered site's containing-method identity and every scanned
+// method's live key.
+type mutationScan struct {
+	sites       []MutationSite
+	uncovered   int
+	siteMethods map[MutationSite]mutationMethodRef
+	liveKeys    map[string]bool
+}
+
 // mutationCoveredSites detects sites in every selected file and keeps the
 // covered ones, capped at maxMutants (file order, then offset — the cap is
-// deterministic). Returns the capped covered sites plus the uncovered count.
-func mutationCoveredSites(files []string, root string, cov map[string]*FileCoverage, categories map[string]bool, maxMutants int, excludes []string) ([]MutationSite, int, error) {
-	var sites []MutationSite
-	uncovered := 0
+// deterministic).
+func mutationCoveredSites(files []string, root string, cov map[string]*FileCoverage, categories map[string]bool, maxMutants int, excludes []string) (mutationScan, error) {
+	scan := mutationScan{
+		siteMethods: map[MutationSite]mutationMethodRef{},
+		liveKeys:    map[string]bool{},
+	}
 	for _, file := range files {
-		if len(sites) >= maxMutants {
+		if len(scan.sites) >= maxMutants {
 			break
 		}
 		if matchesAnyGlob(relPath(root, file), excludes) {
 			continue
 		}
-		fileSites, fileUncovered, err := mutationFileSites(file, cov, categories, maxMutants-len(sites))
+		sites, refs, live, uncovered, err := mutationFileSites(file, root, cov, categories, maxMutants-len(scan.sites))
 		if err != nil {
-			return nil, 0, err
+			return mutationScan{}, err
 		}
-		uncovered += fileUncovered
-		sites = append(sites, fileSites...)
+		scan.uncovered += uncovered
+		scan.sites = append(scan.sites, sites...)
+		for site, ref := range refs {
+			scan.siteMethods[site] = ref
+		}
+		for key := range live {
+			scan.liveKeys[key] = true
+		}
 	}
-	return sites, uncovered, nil
+	return scan, nil
 }
 
-// mutationFileSites detects one file's sites and keeps the covered ones up to
-// budget, returning them plus the file's uncovered count.
-func mutationFileSites(file string, cov map[string]*FileCoverage, categories map[string]bool, budget int) ([]MutationSite, int, error) {
+// mutationFileSites detects one file's sites and keeps the covered ones up
+// to budget, returning them plus the file's uncovered count, every covered
+// site's method identity and every method's live key.
+func mutationFileSites(file, root string, cov map[string]*FileCoverage, categories map[string]bool, budget int) ([]MutationSite, map[MutationSite]mutationMethodRef, map[string]bool, int, error) {
 	src, err := os.ReadFile(file)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, nil, 0, err
 	}
 	methods, err := ExtractMethods(file, src)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, nil, 0, err
 	}
-	var executed, unexecuted map[int]bool
+	keyed := mutationMethodKeys(methods, relPath(root, file))
+	executed, unexecuted := mutationCoverageFlags(cov, file)
+	covered, refs, uncovered := mutationSelectCovered(file, src, methods, categories, executed, unexecuted, keyed, budget)
+	live := make(map[string]bool, len(keyed))
+	for _, key := range keyed {
+		live[key] = true
+	}
+	return covered, refs, live, uncovered, nil
+}
+
+// mutationMethodKeys maps every method name to its stable cache key
+// (project-relative file + method name).
+func mutationMethodKeys(methods []MethodDescriptor, rel string) map[string]string {
+	keyed := make(map[string]string, len(methods))
+	for _, m := range methods {
+		keyed[m.Name] = mutationCacheKey(rel, m.Name)
+	}
+	return keyed
+}
+
+// mutationCoverageFlags flattens the file's cover-profile blocks; a file
+// absent from the profile has no flags (never covered).
+func mutationCoverageFlags(cov map[string]*FileCoverage, file string) (executed, unexecuted map[int]bool) {
 	if fc := lookupCoverage(cov, file); fc != nil {
-		executed, unexecuted = mutationLineFlags(fc)
+		return mutationLineFlags(fc)
 	}
+	return nil, nil
+}
+
+// mutationSelectCovered walks the file's sites in offset order, keeping the
+// covered ones up to budget and binding each to its method's cache identity.
+func mutationSelectCovered(file string, src []byte, methods []MethodDescriptor, categories map[string]bool, executed, unexecuted map[int]bool, keyed map[string]string, budget int) ([]MutationSite, map[MutationSite]mutationMethodRef, int) {
 	var covered []MutationSite
+	refs := map[MutationSite]mutationMethodRef{}
 	uncovered := 0
 	for _, site := range mutationParseSites(file, src, methods, categories) {
 		if len(covered) >= budget {
@@ -748,11 +974,31 @@ func mutationFileSites(file string, cov map[string]*FileCoverage, categories map
 		}
 		if mutationCovered(site, methods, executed, unexecuted) {
 			covered = append(covered, site)
+			if ref, ok := mutationMethodRefFor(site, methods, src, keyed); ok {
+				refs[site] = ref
+			}
 		} else {
 			uncovered++
 		}
 	}
-	return covered, uncovered, nil
+	return covered, refs, uncovered
+}
+
+// mutationMethodRefFor is the cache identity of the method containing
+// site: the stable methods key plus the digest of the method's exact
+// source span (whose start doubles as the method-relative offset base).
+func mutationMethodRefFor(site MutationSite, methods []MethodDescriptor, src []byte, keyed map[string]string) (mutationMethodRef, bool) {
+	for _, m := range methods {
+		if site.Offset < m.StartOffset || site.Offset > m.EndOffset {
+			continue
+		}
+		return mutationMethodRef{
+			key:    keyed[m.Name],
+			digest: fnv1a64Hex(src[m.StartOffset:m.EndOffset]),
+			start:  m.StartOffset,
+		}, true
+	}
+	return mutationMethodRef{}, false
 }
 
 // mutationParseSites parses src and detects its mutation sites; a file that
@@ -830,11 +1076,14 @@ func printNoSites(uncovered int, stdout io.Writer) {
 }
 
 // mutationVerdict prints the summary and, when the gate fails, one violation
-// line per surviving mutant plus the per-category breakdown.
-func mutationVerdict(result mutationRunResult, uncovered int, opts mutationOptions, root string, stdout io.Writer) int {
+// line per surviving mutant plus the per-category breakdown. Re-restored
+// files surface as INTEGRITY violations in the summary plus a stderr
+// warning: the tree was healed, but the run is not trustworthy.
+func mutationVerdict(result mutationRunResult, uncovered int, opts mutationOptions, root string, stdout, stderr io.Writer) int {
 	score := result.score()
-	summary := fmt.Sprintf("mutation score %.1f%% (%d killed, %d survived, %d uncovered)",
-		score*100, result.killedCount(), result.survivedCount(), uncovered)
+	summary := fmt.Sprintf("mutation score %.1f%% (%d killed, %d survived, %d uncovered, %d cached)",
+		score*100, result.killedCount(), result.survivedCount(), uncovered, result.fromCacheCount())
+	summary += integritySuffix(result, root, stderr)
 	if score >= opts.minScore && result.survivedCount() <= opts.maxSurvivors {
 		fmt.Fprintln(stdout, summary)
 		return 0
@@ -848,6 +1097,22 @@ func mutationVerdict(result mutationRunResult, uncovered int, opts mutationOptio
 	}
 	fmt.Fprintf(stdout, "%s; survivors by category: %s\n", summary, mutationCategorySummary(result.survivorsByCategory()))
 	return 2
+}
+
+// integritySuffix renders the re-restored-files notice and warns on stderr
+// when the end-of-run integrity check had to heal the tree.
+func integritySuffix(result mutationRunResult, root string, stderr io.Writer) string {
+	if len(result.integrityViolations) == 0 {
+		return ""
+	}
+	rel := make([]string, 0, len(result.integrityViolations))
+	for _, path := range result.integrityViolations {
+		rel = append(rel, relPath(root, path))
+	}
+	fmt.Fprintf(stderr,
+		"crap4go mutation: working tree did not restore cleanly (%d file(s) re-restored). Treat this run as suspect and re-run.\n",
+		len(rel))
+	return "; INTEGRITY: re-restored after run: " + strings.Join(rel, ", ")
 }
 
 // mutationMethodSuffix renders the optional ` in (T)Method` message tail.
