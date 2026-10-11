@@ -1,5 +1,9 @@
 package main
 
+import (
+	"math"
+)
+
 // MethodDescriptor describes a single Go function or method discovered by
 // parsing source. StartLine and EndLine are 1-based, inclusive.
 type MethodDescriptor struct {
@@ -43,12 +47,16 @@ func CrapScore(cc int, coverage *float64) *float64 {
 }
 
 // maxCrap returns the largest numeric CRAP score in metrics, or 0.0 when there
-// are none (all N/A). Nil scores are ignored.
+// are none (all N/A). Nil scores are ignored. The accumulation is a math.Max
+// fold like the upstream Dart implementation: CRAP scores are always > 0, so
+// folding from 0.0 is equivalent to the guarded update — and it removes the
+// boundary-mutant dead weight (`>` -> `>=` on equal maxima is unobservable,
+// verified: the mutant passes the full suite).
 func maxCrap(metrics []MethodMetric) float64 {
 	max := 0.0
 	for _, m := range metrics {
-		if m.CrapScore != nil && *m.CrapScore > max {
-			max = *m.CrapScore
+		if m.CrapScore != nil {
+			max = math.Max(max, *m.CrapScore)
 		}
 	}
 	return max
