@@ -44,7 +44,7 @@ func ExtractMethods(filePath string, src []byte) ([]MethodDescriptor, error) {
 			Name:        name,
 			StartLine:   fset.Position(fd.Pos()).Line,
 			EndLine:     fset.Position(fd.End()).Line,
-			Complexity:  ComplexityOf(fd.Body),
+			Complexity:  ComplexityOf(fd.Body, true),
 			StartOffset: tf.Offset(fd.Pos()),
 			EndOffset:   tf.Offset(fd.End()),
 		})

@@ -30,7 +30,7 @@ func parseBody(t *testing.T, src, name string) *ast.BlockStmt {
 func TestComplexity_Base(t *testing.T) {
 	body := parseBody(t, `package main
 func base() { x := 1; _ = x }`, "base")
-	if got := ComplexityOf(body); got != 1 {
+	if got := ComplexityOf(body, true); got != 1 {
 		t.Fatalf("got %d, want 1", got)
 	}
 }
@@ -42,7 +42,7 @@ func f(n int) int {
 	for i := 0; i < n; i++ { return i }
 	return 0
 }`
-	if got := ComplexityOf(parseBody(t, src, "f")); got != 3 {
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 3 {
 		t.Fatalf("got %d, want 3 (base + if + for)", got)
 	}
 }
@@ -62,7 +62,7 @@ func f(s []int) int {
 	}
 }`
 	// base 1 + for-range 1 + 3 case clauses = 5
-	if got := ComplexityOf(parseBody(t, src, "f")); got != 5 {
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 5 {
 		t.Fatalf("got %d, want 5", got)
 	}
 }
@@ -77,7 +77,7 @@ func TestComplexity_Select(t *testing.T) {
 	}
 }`
 	// base 1 + 2 comm clauses = 3
-	if got := ComplexityOf(parseBody(t, src, "f")); got != 3 {
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 3 {
 		t.Fatalf("got %d, want 3", got)
 	}
 }
@@ -88,7 +88,7 @@ func f(a, b, c bool) bool {
 	return a && b || c
 }`
 	// base 1 + 1 (&&) + 1 (||) = 3
-	if got := ComplexityOf(parseBody(t, src, "f")); got != 3 {
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 3 {
 		t.Fatalf("got %d, want 3", got)
 	}
 }
@@ -100,7 +100,7 @@ func f(n int) int {
 	return add(n, 1)
 }`
 	// base 1 + if inside FuncLit (descended) 1 = 2
-	if got := ComplexityOf(parseBody(t, src, "f")); got != 2 {
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 2 {
 		t.Fatalf("got %d, want 2 (FuncLit branches counted)", got)
 	}
 }
@@ -133,13 +133,70 @@ func f(n int, s []int) int {
 	// + &&                      = 5
 	// + for-range (s)           = 6
 	// + case (1,2) + default    = 8
-	if got := ComplexityOf(parseBody(t, src, "f")); got != 8 {
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 8 {
 		t.Fatalf("got %d, want 8", got)
 	}
 }
 
 func TestComplexity_NilBody(t *testing.T) {
-	if got := ComplexityOf(nil); got != 0 {
+	if got := ComplexityOf(nil, true); got != 0 {
 		t.Fatalf("got %d, want 0", got)
+	}
+}
+
+func TestComplexity_TypeSwitchCases(t *testing.T) {
+	// Upstream's switch blind-spot fix maps to Go's type switches: every
+	// case clause counts, default included, same as expression switches.
+	src := `package main
+func f(x interface{}) string {
+	switch v := x.(type) {
+	case int:
+		return "int"
+	case string:
+		return "string"
+	default:
+		return "other"
+	}
+}`
+	// base 1 + 3 type-switch clauses
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 4 {
+		t.Fatalf("got %d, want 4", got)
+	}
+}
+
+func TestComplexity_CaseGuardLogicalOps(t *testing.T) {
+	// ||/&& inside case expressions count (the Go analog of upstream's
+	// ||/&& pattern counting in switch members).
+	src := `package main
+func f(n int) string {
+	switch {
+	case n < 0 || n > 100:
+		return "out"
+	case n >= 0 && n < 10:
+		return "small"
+	}
+	return "mid"
+}`
+	// base 1 + 2 cases + || + &&
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 5 {
+		t.Fatalf("got %d, want 5", got)
+	}
+}
+
+func TestComplexity_CountLambdasFlag(t *testing.T) {
+	src := `package main
+func f(a bool) {
+	g := func(x bool) {
+		if x {
+			println("y")
+		}
+	}
+	g(a)
+}`
+	if got := ComplexityOf(parseBody(t, src, "f"), true); got != 2 {
+		t.Fatalf("count-lambdas: got %d, want 2 (base + if inside literal)", got)
+	}
+	if got := ComplexityOf(parseBody(t, src, "f"), false); got != 1 {
+		t.Fatalf("no-lambdas: got %d, want 1", got)
 	}
 }

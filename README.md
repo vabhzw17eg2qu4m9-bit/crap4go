@@ -59,7 +59,7 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 ### Subcommands
 
 `profile`, `skill`, and the gate subcommands (`file-naming`, `nesting`,
-`class-size`, `weight-of-class`, `unused-code`, `unused-files`,
+`complexity`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
 `duplicates`) dispatch on the first argument only; anything else
 takes the analyze path above.
@@ -68,6 +68,7 @@ takes the analyze path above.
 crap4go profile --name TestParser   # run instrumented tests, report per-method timing
 crap4go file-naming                 # flag mechanical file names (util.go, batch1.go, ...)
 crap4go nesting                     # flag functions nested deeper than 5
+crap4go complexity --metric cognitive --max 8   # flag functions over the cognitive limit
 crap4go class-size                  # flag types with >25 methods or WMC >80
 crap4go weight-of-class             # flag data-heavy exported structs (fields > 33% of members)
 crap4go unused-code                 # flag unexported declarations never referenced
@@ -102,7 +103,17 @@ baseline — violations always fail with exit 2, thresholds keep upstream
 defaults; 0.6.0's baseline/severity/config knobs and 0.6.1's internal
 refactor do not apply, and 0.5.2's profile fix is Dart-only).
 `nesting`
-fails functions whose block nesting exceeds 5 (body = level 1).
+fails functions whose block nesting exceeds 5 (body = level 1); an
+`else if` chain is flat — every chained `if` nests at the originating
+`if`'s level — while an `if` inside a plain `else` block keeps paying
+(ported from crap4dart 7bf7a15).
+`complexity` flags functions over a complexity limit (default max 10,
+cyclomatic, reported as `CC`); `--metric cognitive` switches to
+SonarSource-style cognitive complexity (+1 per flow break, nesting-
+weighted increments for structural constructs, one increment per
+identical `&&`/`||` sequence, flat `else if` chains, function literals
+nest one level deeper without incrementing, `--count-lambdas` on by
+default) and `--max N` overrides the limit.
 `class-size` fails named types with more than 25 methods or a
 weighted-methods sum (total cyclomatic complexity) above 80, methods
 gathered across the package. `weight-of-class` fails exported struct

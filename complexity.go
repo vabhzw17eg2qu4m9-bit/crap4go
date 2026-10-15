@@ -11,20 +11,24 @@ import (
 //   - *ast.IfStmt      (if)
 //   - *ast.ForStmt     (for)
 //   - *ast.RangeStmt   (for ... range)
-//   - *ast.CaseClause  (switch case or default)
+//   - *ast.CaseClause  (switch case or default; shared by expression and
+//     type switches)
 //   - *ast.CommClause  (select case or default)
 //   - *ast.BinaryExpr  with op token.LAND or token.LOR (&& / ||)
 //
-// Anonymous function literals (*ast.FuncLit) inside the body are traversed and
-// their branches count towards the enclosing function (matches crap4java and
-// crap4dart with countLambdas=true). Go has no ternary, while, do-while, or
-// catch-as-construct.
-func ComplexityOf(body *ast.BlockStmt) int {
+// Function literals (*ast.FuncLit) inside the body are traversed and their
+// branches count towards the enclosing function when countLambdas is true
+// (matches crap4java and crap4dart with countLambdas=true). Go has no
+// ternary, while, do-while, or catch-as-construct.
+func ComplexityOf(body *ast.BlockStmt, countLambdas bool) int {
 	if body == nil {
 		return 0
 	}
 	cc := 1
 	ast.Inspect(body, func(n ast.Node) bool {
+		if _, ok := n.(*ast.FuncLit); ok && !countLambdas {
+			return false // lambda bodies are a separate unit of code
+		}
 		cc += complexityDelta(n)
 		return true
 	})

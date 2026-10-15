@@ -51,7 +51,9 @@ func TestStmtNesting(t *testing.T) {
 	}{
 		{"flat body", "package p\nfunc F() { return }\n", 1},
 		{"one if", "package p\nfunc F() { if x { } }\n", 2},
-		{"else-if nests one more", "package p\nfunc F() {\nif x {\n} else if y {\n} else {\n}\n}\n", 3},
+		{"else-if chain is flat", "package p\nfunc F() {\nif x {\n} else if y {\n} else {\n}\n}\n", 2},
+		{"long else-if chain stays flat", "package p\nfunc F() {\nif x {\n} else if y {\n} else if z {\n} else if w {\n}\n}\n", 2},
+		{"if inside plain else still nests", "package p\nfunc F() {\nif x {\n} else {\nif y {\n}\n}\n}\n", 3},
 		{"switch case body", "package p\nfunc F() {\nswitch x {\ncase 1:\nif y {\n}\n}\n}\n", 3},
 		{"plain block", "package p\nfunc F() { { { } } }\n", 3},
 	}
@@ -113,6 +115,81 @@ func TestRun_NestingNoFiles(t *testing.T) {
 		t.Fatalf("exit = %d, want 0", code)
 	}
 	if want := "No Go files to check."; !strings.Contains(out.String(), want) {
+		t.Errorf("output missing %q:\n%s", want, out.String())
+	}
+}
+
+// elseIfChain is a 5-branch else-if chain: flat since 7bf7a15, so the whole
+// chain nests at 1 (+ body = 2) and passes the default limit.
+const elseIfChain = `package p
+
+func Classify(x int) string {
+	if x < 0 {
+		return "neg"
+	} else if x == 0 {
+		return "zero"
+	} else if x < 10 {
+		return "small"
+	} else if x < 100 {
+		return "medium"
+	}
+	return "large"
+}
+`
+
+// nestedElses buries an if in each plain else block, six levels deep: the
+// chain-is-flat exemption does not apply, nesting = 7 > max 5.
+const nestedElses = `package p
+
+func Classify(x int) string {
+	if x < 0 {
+		return "neg"
+	} else {
+		if x == 0 {
+			return "zero"
+		} else {
+			if x < 10 {
+				return "small"
+			} else {
+				if x < 100 {
+					return "medium"
+				} else {
+					if x < 1000 {
+						return "large"
+					} else {
+						if x < 10000 {
+							return "huge"
+						}
+					}
+				}
+			}
+		}
+	}
+}
+`
+
+func TestRun_NestingElseIfChainFlat(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root+"/chain.go", elseIfChain)
+	var out, errOut bytes.Buffer
+	code := runWithRoot([]string{"nesting"}, root, &out, &errOut)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (chain must stay flat; stderr=%s)", code, errOut.String())
+	}
+	if want := "1 functions within nesting 5"; !strings.Contains(out.String(), want) {
+		t.Errorf("output missing %q:\n%s", want, out.String())
+	}
+}
+
+func TestRun_NestingIfInPlainElseStillNests(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, root+"/nested.go", nestedElses)
+	var out, errOut bytes.Buffer
+	code := runWithRoot([]string{"nesting"}, root, &out, &errOut)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (stderr=%s)", code, errOut.String())
+	}
+	if want := "nested.go:3: Classify nesting=7 > max 5"; !strings.Contains(out.String(), want) {
 		t.Errorf("output missing %q:\n%s", want, out.String())
 	}
 }

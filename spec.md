@@ -142,7 +142,18 @@ Cyclomatic complexity base is 1, +1 for each occurrence of:
 Anonymous function literals (`*ast.FuncLit`) inside a body are traversed and
 their branches count towards the enclosing function (matches `crap4java` and
 `crap4dart` with `countLambdas=true`). Go has no ternary, `while`, `do-while`,
-or `catch`-as-construct, and `recover()` is not counted.
+or `catch`-as-construct, and `recover()` is not counted. Every `switch` case
+counts — expression and type switches share `*ast.CaseClause` in `go/ast` —
+and `&&`/`||` inside case expressions count like any other.
+
+The `complexity` gate (§11) can score a second metric,
+**cognitive complexity** (`--metric cognitive`): the SonarSource definition
+ported from crap4dart 7bf7a15 — +1 per flow break, a nesting increment of
+the current depth for structural constructs, one increment per
+identical-operator `&&`/`||` sequence, flat `else if` chains, function
+literal bodies one level deeper without incrementing, starting at 0. See
+§11 for the full rules; CRAP itself is always computed from the cyclomatic
+value.
 
 Verified edge cases:
 - `CC=5, coverage=1.0  → 5.0`
@@ -314,7 +325,37 @@ external Checkstyle-XML gate (gate-framework config), run_tests-by-default
 a full test suite per commit is unacceptable), and the pixel-detector
 tuning commits are Flutter/gate-framework features with no Go counterpart.
 
-## 11. `nesting`
+## 11. `complexity`
+
+```
+crap4go complexity [--metric cyclomatic|cognitive] [--max N] [--count-lambdas] [paths...]
+```
+
+Port of crap4dart's `complexity` gate with the cognitive-metric option
+(upstream 7bf7a15): flags functions whose complexity exceeds `--max`
+(default 10, the upstream `max_complexity` default) and returns exit code 2
+iff there are violations. `--metric` selects the metric — `cyclomatic`
+(default, reported as `CC`) or `cognitive` (SonarSource-style, reported as
+`cognitive`); anything else is a usage error. `--count-lambdas` (default
+true) excludes function-literal bodies from the enclosing function's score
+when false. Output: one line per violation
+(`<relative path>:<line>: <func> CC=N > max M` / `cognitive=N > max M`)
+plus a summary (`N/M functions over their cyclomatic limit M`).
+
+Cognitive complexity follows the SonarSource definition (v1.2) as the Go
+grammar allows: +1 per flow break (`if`, `else if`, `else`, `for`,
+`for … range`, every `switch` case and `default`, every `select` comm case
+and `default`, and each *sequence* of identical `&&`/`||` operators —
+`a && b && c` is one sequence, `a && b || c` is two), plus a nesting
+increment of the current depth for every structural construct (everything
+but the logical sequences) when it sits inside another one. `else if`
+chains stay flat: each chained `if` increments once at the originating
+`if`'s depth, while an `if` inside a plain `else` block keeps paying the
+nesting penalty. Function literals nest one level deeper without
+incrementing themselves; Go has no ternary, `while`, `do-while` or
+`catch`-as-construct, and `goto`/labels are not flow breaks.
+
+## 12. `nesting`
 
 ```
 crap4go nesting [paths...]
@@ -325,12 +366,14 @@ ported from crap4dart's `nesting` gate). The function body block counts as
 level 1; every nested block or control-flow statement (`if`, `for`,
 `switch`, type-switch, `select`, plain block statement) adds one.
 Control-statement braces do not add a level on top of the statement
-itself; `else if` chains nest one more level per branch (upstream
-visitor semantics). Output: one line per violation
+itself. An `else if` chain is flat since 7bf7a15: every chained `if`'s
+branches nest at the originating `if`'s level, so a chain of any length
+scores 2 — while an `if` inside a plain `else` block keeps paying a level
+of its own. Output: one line per violation
 (`<relative path>:<line>: <func> nesting=N > max 5`) plus a summary
 (`N/M functions nested deeper than 5`). Exit code 2 iff violations.
 
-## 12. `class-size`
+## 13. `class-size`
 
 ```
 crap4go class-size [paths...]
@@ -345,7 +388,7 @@ Output: one line per violation (`<type> has N methods > max 25` and/or
 `<type> WMC=N > max 80`, at the type's first method) plus a summary.
 Exit code 2 iff violations.
 
-## 13. `weight-of-class`
+## 14. `weight-of-class`
 
 ```
 crap4go weight-of-class [paths...]
@@ -360,7 +403,7 @@ fields are never flagged. Output: one line per violation (`<type> exposes
 N public fields of M public members (weight=W)`) plus a summary.
 Exit code 2 iff violations.
 
-## 14. `unused-code`
+## 15. `unused-code`
 
 ```
 crap4go unused-code [paths...]
@@ -382,7 +425,7 @@ Exit code 2 iff violations.
 `unused-code: not meaningful for a partial selection` and exits 0 —
 a partial file set yields false positives (ported from crap4dart 0.5.1).
 
-## 15. `unused-files`
+## 16. `unused-files`
 
 ```
 crap4go unused-files [paths...]
@@ -405,7 +448,7 @@ a summary. Exit code 2 iff violations.
 import graph; Go has no re-export concept (an import names the
 implementing package directory directly), so nothing extra applies.
 
-## 16. `banned-imports`
+## 17. `banned-imports`
 
 ```
 crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
@@ -426,7 +469,7 @@ prints `no rules configured` and exits 0; `--from` without `--forbid`
 (or more `--message` values than rules) is a usage error (exit 1).
 Exit code 2 iff violations.
 
-## 17. `magic-constants`
+## 18. `magic-constants`
 
 ```
 crap4go magic-constants [paths...]
@@ -457,7 +500,7 @@ Output: one line per violation
 `<relative path>:<line>: literal <value> repeats N times — extract a named
 constant`) plus a summary. Exit code 2 iff violations.
 
-## 18. `test-assertions`
+## 19. `test-assertions`
 
 ```
 crap4go test-assertions [paths...]
@@ -485,7 +528,7 @@ root; `vendor/` trees are excluded. Output: one line per violation
 (`<relative path>:<line>: TestFoo has 0 assertion(s) — a test without
 assertions verifies nothing`) plus a summary. Exit code 2 iff violations.
 
-## 19. `folder-structure`
+## 20. `folder-structure`
 
 ```
 crap4go folder-structure [dirs...]
@@ -501,7 +544,7 @@ Output: one line per violation
 (`<dir>: N loose .go files directly in <dir> — group them into feature
 packages (max 0)`) plus a summary. Exit code 2 iff violations.
 
-## 20. `duplicates`
+## 21. `duplicates`
 
 ```
 crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
@@ -563,7 +606,7 @@ plus a summary: pass `N files, P.PP% duplicated lines`, fail
 Exit code 2 iff there are violations; `no files with enough tokens` with
 exit 0 when no file clears the token minimum.
 
-## 21. `mutation`
+## 22. `mutation`
 
 Go adaptation of crap4dart c865ec3's `mutation` gate (§11.22, adapted from
 the unclebob/mutator research conclusions):
@@ -679,13 +722,13 @@ once against the full invocation, and only the confirmed outcome is
 reported and cached; the summary gains
 `; test-scoped N (M re-confirmed killed)` when scoping confirmed kills.
 
-## 22. `skill`
+## 23. `skill`
 
 Prints a Go-adapted version of crap4dart's profiling skill (when to profile,
 how the instrumentation works, how to read the report), ending with one line
 on installing it as an agent skill. Always exits 0.
 
-## 23. Threshold
+## 24. Threshold
 
 The threshold defaults to `8.0` and is overridable with `--threshold`. After
 the report is printed, the maximum numeric CRAP is compared against it; if
@@ -693,7 +736,7 @@ the report is printed, the maximum numeric CRAP is compared against it; if
 to stderr and the process exits 2. Otherwise the process exits 0. A threshold
 of `0` or less is a usage error.
 
-## 24. Exit codes
+## 25. Exit codes
 
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
@@ -706,13 +749,13 @@ of `0` or less is a usage error.
 |      | `duplicates`, `folder-structure`, `mutation`). (Also reported on        |
 |      | stderr.)                                                                |
 
-## 25. `--run-tests`
+## 26. `--run-tests`
 
 Runs `go test ./... -coverprofile=coverage.out -covermode=atomic` in the
 project root, streaming stdout/stderr through. On non-zero exit, the error is
 printed to stderr and the process exits 1.
 
-## 26. Non-goals
+## 27. Non-goals
 
 - No type-checking or build verification — parsing only.
 - No HTML/branch coverage reports — only the statement-level cover profile.

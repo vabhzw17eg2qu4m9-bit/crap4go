@@ -107,7 +107,7 @@ func addMethodStats(fd *ast.FuncDecl, fset *token.FileSet, path, pkgDir string, 
 		*order = append(*order, key)
 	}
 	s.Methods++
-	s.WMC += ComplexityOf(fd.Body)
+	s.WMC += ComplexityOf(fd.Body, true)
 }
 
 // statsViolations returns the limit violations of one type's stats.
