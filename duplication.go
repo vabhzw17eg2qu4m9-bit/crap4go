@@ -933,12 +933,31 @@ func buildClonesResult(files []dupFile, groups []dupGroup, root string, opts dup
 				group.tokenCount(), lineSpan, len(locations), strings.Join(shown, "; "), more),
 		})
 	}
+	percent := dupTotalPercent(files)
 	if len(groups) == 0 {
-		result.summary = fmt.Sprintf("no clones >= %d lines across %d files", opts.minLines, len(files))
+		result.summary = fmt.Sprintf("no clones >= %d lines across %d files, %.2f%% duplicated lines",
+			opts.minLines, len(files), percent)
 	} else {
-		result.summary = fmt.Sprintf("%d clone groups (>= %d tokens, >= %d lines)", len(groups), opts.minTokens, opts.minLines)
+		result.summary = fmt.Sprintf("%d clone groups (>= %d tokens, >= %d lines), %.2f%% duplicated lines",
+			len(groups), opts.minTokens, opts.minLines, percent)
 	}
 	return result
+}
+
+// dupTotalPercent computes the project-wide duplicated-line percentage
+// over the scan — lines carrying marked tokens vs total lines (the same
+// number the percentage report aggregates) — so a clones-mode summary
+// always carries a number too.
+func dupTotalPercent(files []dupFile) float64 {
+	dupLines, totalLines := 0, 0
+	for _, f := range files {
+		totalLines += f.totalLines
+		dupLines += len(dupLineSet(f))
+	}
+	if totalLines == 0 {
+		return 0
+	}
+	return float64(dupLines) / float64(totalLines) * 100
 }
 
 // dupLineSet collects the distinct source lines holding duplicated tokens.

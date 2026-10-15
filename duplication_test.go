@@ -650,6 +650,44 @@ func TestRun_DuplicatesClonesReport(t *testing.T) {
 	}
 }
 
+// TestRun_DuplicatesClonesSummaryCarriesPercent pins the clones-mode
+// summary's project-wide duplicated-line percentage (ported from
+// crap4dart 0f54f0d): marked lines across all scanned files over total
+// lines, two decimals, in both summary variants.
+func TestRun_DuplicatesClonesSummaryCarriesPercent(t *testing.T) {
+	// Two identical blocks: the accepted 50-token windows mark 5 lines
+	// per file — 10 of 36 project-wide.
+	out, code := clonesDupPair(t, nil, dupBlock(), dupBlock())
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2:\n%s", code, out)
+	}
+	if want := "1 clone groups (>= 50 tokens, >= 5 lines), 27.78% duplicated lines"; !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
+	}
+
+	// A unique tail in each file grows only the denominator: 10 of 38 —
+	// the percentage aggregates every scanned file, it is not the clone's
+	// own coverage.
+	tailA := dupBlock() + "var uniqueA = 1\n"
+	tailB := dupBlock() + "var uniqueB = 2\n"
+	out, code = clonesDupPair(t, nil, tailA, tailB)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2:\n%s", code, out)
+	}
+	if want := "1 clone groups (>= 50 tokens, >= 5 lines), 26.32% duplicated lines"; !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
+	}
+
+	// Distinct files pass with the no-clones summary and its 0.00%.
+	out, code = clonesDupPair(t, nil, cleanBlock(100), cleanBlock(200))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0:\n%s", code, out)
+	}
+	if want := "no clones >= 5 lines across 2 files, 0.00% duplicated lines"; !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
+	}
+}
+
 // TestRun_DuplicatesClonesSharedExtent pins the shared-extent extension:
 // each occurrence is anchored at the maximal start all occurrences share,
 // not at its seed window. Two identical files open with a 100+-token

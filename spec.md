@@ -640,8 +640,11 @@ plus a summary: pass `N files, P.PP% duplicated lines`, fail
 non-overlapping group (longest first), with every occurrence location in
 the message — `clone: T tokens / L lines, K occurrences:
 <path>:<first>-<last>; ...` (the first three locations, then
-`(+N more)`) — plus a summary `K clone groups (>= T tokens, >= L lines)`
-or, on a clean scan, `no clones >= L lines across N files`. Exit code 2
+`(+N more)`) — plus a summary `K clone groups (>= T tokens, >= L lines),
+P.PP% duplicated lines` or, on a clean scan, `no clones >= L lines across
+N files, P.PP% duplicated lines` — the same project-wide duplicated-line
+percentage the percentage report aggregates (distinct lines holding
+duplicated tokens over all scanned files' total lines). Exit code 2
 iff there are violations; `no files with enough tokens` with exit 0 when
 no file clears the token minimum.
 
