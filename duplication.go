@@ -46,8 +46,9 @@ type dupFile struct {
 	totalLines int
 }
 
-// DuplicationViolation is one file whose duplicated line percentage
-// exceeds the threshold.
+// DuplicationViolation is one reported finding: a file whose duplicated
+// line percentage exceeds the threshold, or one clone group under
+// --report clones.
 type DuplicationViolation struct {
 	Path    string
 	Line    int
@@ -55,32 +56,62 @@ type DuplicationViolation struct {
 }
 
 // duplicationResult aggregates the scan: violations, the number of
-// tokenized files and the duplicated-line percentage across all of them.
+// tokenized files, the duplicated-line percentage across all of them and
+// the one-line summary the command prints.
 type duplicationResult struct {
 	violations []DuplicationViolation
 	files      int
 	percent    float64
+	summary    string
 }
 
 // dupOptions holds the parsed `duplicates` subcommand configuration.
 type dupOptions struct {
-	threshold      float64
-	minTokens      int
-	minLines       int
-	ignoreLocals   bool
-	ignoreLiterals bool
-	excludes       []string
-	sources        []string
-	paths          []string
+	threshold          float64
+	minTokens          int
+	minLines           int
+	report             dupReport
+	ignoreLocals       bool
+	ignoreLiterals     bool
+	ignoreIdentifiers  bool
+	ignoreImports      bool
+	skipDuplicateFiles bool
+	excludes           []string
+	sources            []string
+	paths              []string
+}
+
+// dupReport selects what the `duplicates` subcommand reports violations
+// for: per-file duplicated-line percentages (the default) or PMD-CPD-style
+// clone groups.
+type dupReport int
+
+const (
+	dupReportPercentage dupReport = iota
+	dupReportClones
+)
+
+// parseDupReport parses a --report value: "percentage" or "clones".
+func parseDupReport(value string) (dupReport, bool) {
+	switch value {
+	case "percentage":
+		return dupReportPercentage, true
+	case "clones":
+		return dupReportClones, true
+	}
+	return 0, false
 }
 
 // RunDuplicatesCommand implements `crap4go duplicates [--threshold N]
-// [--min-tokens N] [--min-lines N] [--exclude GLOB]... [--source PATH]...
-// [--ignore-locals] [--ignore-literals] [paths...]`: it tokenizes every
-// scanned file, marks sliding token windows that appear at least twice
-// (>= min-tokens tokens, spanning >= min-lines lines) within or across
-// files, and flags files whose duplicated line percentage exceeds
-// --threshold. Exit code 2 iff there are violations.
+// [--min-tokens N] [--min-lines N] [--report MODE] [--exclude GLOB]...
+// [--source PATH]... [--ignore-locals] [--ignore-literals]
+// [--ignore-identifiers] [--ignore-imports] [--skip-duplicate-files]
+// [paths...]`: it tokenizes every scanned file, detects token blocks that
+// appear at least twice (>= min-tokens tokens, spanning >= min-lines
+// lines) within or across files, and either flags files whose duplicated
+// line percentage exceeds --threshold (the default) or reports one
+// violation per clone group (--report clones). Exit code 2 iff there are
+// violations.
 func RunDuplicatesCommand(args []string, root string, stdout, stderr io.Writer) int {
 	opts, code, ok := parseDuplicatesFlags(args, stderr)
 	if !ok {
@@ -101,11 +132,10 @@ func RunDuplicatesCommand(args []string, root string, stdout, stderr io.Writer) 
 	for _, v := range result.violations {
 		fmt.Fprintf(stdout, "%s:%d: %s\n", v.Path, v.Line, v.Message)
 	}
+	fmt.Fprintln(stdout, result.summary)
 	if len(result.violations) > 0 {
-		fmt.Fprintf(stdout, "%d/%d files over %g%% duplication\n", len(result.violations), scanned, opts.threshold)
 		return 2
 	}
-	fmt.Fprintf(stdout, "%d files, %.2f%% duplicated lines\n", scanned, result.percent)
 	return 0
 }
 
@@ -123,8 +153,12 @@ func parseDuplicatesFlags(args []string, stderr io.Writer) (dupOptions, int, boo
 	fs.Float64Var(&opts.threshold, "threshold", defaultDupThreshold, "flag files over this % of duplicated lines")
 	fs.IntVar(&opts.minTokens, "min-tokens", defaultDupMinTokens, "minimum tokens in a duplicated block")
 	fs.IntVar(&opts.minLines, "min-lines", defaultDupMinLines, "minimum source lines in a duplicated block")
+	report := fs.String("report", "percentage", "what violations report for: percentage or clones (PMD CPD style)")
 	fs.BoolVar(&opts.ignoreLocals, "ignore-locals", false, "rename function-local identifiers consistently so renamed clones are detected")
 	fs.BoolVar(&opts.ignoreLiterals, "ignore-literals", false, "replace string and numeric literals with placeholders so clones differing only in values are detected")
+	fs.BoolVar(&opts.ignoreIdentifiers, "ignore-identifiers", false, "replace all identifiers with one placeholder before hashing (structure-only matching)")
+	fs.BoolVar(&opts.ignoreImports, "ignore-imports", false, "exclude import declarations from tokenization")
+	fs.BoolVar(&opts.skipDuplicateFiles, "skip-duplicate-files", false, "skip files whose token stream equals an earlier file's")
 	excludes := &stringSlice{}
 	sources := &stringSlice{}
 	fs.Var(excludes, "exclude", "glob of project-relative paths to skip (repeatable)")
@@ -136,6 +170,12 @@ func parseDuplicatesFlags(args []string, stderr io.Writer) (dupOptions, int, boo
 		fmt.Fprintln(stderr, "--min-tokens and --min-lines must be positive")
 		return dupOptions{}, 1, false
 	}
+	parsedReport, ok := parseDupReport(*report)
+	if !ok {
+		fmt.Fprintln(stderr, `--report must be "percentage" or "clones"`)
+		return dupOptions{}, 1, false
+	}
+	opts.report = parsedReport
 	opts.excludes = excludes.slice()
 	if len(opts.excludes) == 0 {
 		opts.excludes = defaultDupExcludes
@@ -214,7 +254,7 @@ func matchesAnyGlob(name string, patterns []string) bool {
 	return false
 }
 
-// CheckDuplicates tokenizes the file set, detects duplicated token windows
+// CheckDuplicates tokenizes the file set, detects duplicated token blocks
 // and builds the result. It returns the result plus the number of files in
 // the scan (those with at least minTokens tokens); files with fewer are
 // skipped from the scan entirely.
@@ -223,12 +263,17 @@ func CheckDuplicates(files []string, root string, opts dupOptions) (duplicationR
 	if len(scanned) == 0 {
 		return duplicationResult{}, 0
 	}
-	detectDuplicates(scanned, opts)
+	groups := detectDupGroups(scanned, opts)
+	if opts.report == dupReportClones {
+		return buildClonesResult(scanned, groups, root, opts), len(scanned)
+	}
 	return buildDuplicationResult(scanned, root, opts.threshold), len(scanned)
 }
 
 // scanDupFiles reads and tokenizes every file, keeping those with at least
-// minTokens tokens (unreadable files are skipped).
+// minTokens tokens (unreadable files are skipped). With skip_duplicate_files
+// a file whose token stream equals an earlier file's is dropped — a copied
+// file is analyzed once (CPD --skip-duplicate-files).
 func scanDupFiles(files []string, opts dupOptions) []dupFile {
 	var scanned []dupFile
 	for _, path := range files {
@@ -240,26 +285,52 @@ func scanDupFiles(files []string, opts dupOptions) []dupFile {
 		if len(tokens) < opts.minTokens {
 			continue
 		}
+		if opts.skipDuplicateFiles && hasDupTwin(scanned, tokens) {
+			continue
+		}
 		scanned = append(scanned, dupFile{path: path, tokens: tokens, totalLines: dupTotalLines(src)})
 	}
 	return scanned
+}
+
+// hasDupTwin reports whether an already-scanned file carries an identical
+// token stream (by masked value).
+func hasDupTwin(scanned []dupFile, tokens []dupToken) bool {
+	for _, f := range scanned {
+		if sameDupTokens(f.tokens, tokens) {
+			return true
+		}
+	}
+	return false
+}
+
+// sameDupTokens reports whether two token streams are identical by value.
+func sameDupTokens(a, b []dupToken) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i].value != b[i].value {
+			return false
+		}
+	}
+	return true
 }
 
 // tokenizeGo scans src into normalized tokens with go/scanner: comments
 // are skipped by the default scan mode, auto-inserted semicolons
 // (SEMICOLON with literal "\n") are dropped, real semicolons and all other
 // tokens keep their lexeme. ignore_literals replaces string literals with
-// $STR and numeric literals with $NUM; ignore_locals renames identifiers
-// declared in an outermost function scope to $L1, $L2, ... in first-use
-// order, so renamed (Type-2) clones hash identically while the API
-// surface keeps its lexeme.
+// $STR and numeric literals with $NUM; ignore_identifiers replaces every
+// identifier with $ID (structure-only matching); ignore_locals renames
+// identifiers declared in an outermost function scope to $L1, $L2, ... in
+// first-use order, so renamed (Type-2) clones hash identically while the
+// API surface keeps its lexeme. ignore_imports drops import declarations
+// from the stream entirely.
 func tokenizeGo(src []byte, opts dupOptions) []dupToken {
 	fset := token.NewFileSet()
 	file := fset.AddFile("", fset.Base(), len(src))
-	var scopes []*dupScope
-	if opts.ignoreLocals {
-		scopes = collectDupScopes(src)
-	}
+	scopes, importRanges := dupMasks(src, opts)
 	var s scanner.Scanner
 	s.Init(file, src, nil /* errors ignored */, 0)
 	var tokens []dupToken
@@ -271,26 +342,91 @@ func tokenizeGo(src []byte, opts dupOptions) []dupToken {
 		if tok == token.SEMICOLON && lit == "\n" {
 			continue
 		}
+		offset := file.Offset(pos)
+		if inDupRanges(offset, importRanges) {
+			continue
+		}
 		value := tok.String()
 		if lit != "" {
 			value = lit
 		}
 		tokens = append(tokens, dupToken{
 			lexeme: value,
-			value:  dupNormalize(value, tok, file.Offset(pos), scopes, opts),
+			value:  dupNormalize(value, tok, offset, scopes, opts),
 			line:   file.Line(pos),
 		})
 	}
 }
 
+// dupMasks parses src once when any masking knob needs the parse tree and
+// returns the outermost function scopes (ignore_locals) and the import
+// declaration ranges (ignore_imports); both nil when no knob applies.
+func dupMasks(src []byte, opts dupOptions) ([]*dupScope, [][2]int) {
+	if !opts.ignoreLocals && !opts.ignoreImports {
+		return nil, nil
+	}
+	parsed, base := parseDupAST(src)
+	var scopes []*dupScope
+	var imports [][2]int
+	if opts.ignoreLocals {
+		scopes = collectDupScopes(parsed, base)
+	}
+	if opts.ignoreImports {
+		imports = dupImportRanges(parsed, base)
+	}
+	return scopes, imports
+}
+
+// parseDupAST parses src for the masking passes, returning the file (nil
+// when there is no parse tree) and the FileSet base for 0-based offsets.
+func parseDupAST(src []byte) (*ast.File, int) {
+	fset := token.NewFileSet()
+	f, _ := parser.ParseFile(fset, "", src, 0)
+	if f == nil {
+		return nil, 0
+	}
+	return f, fset.File(f.Package).Base()
+}
+
+// dupImportRanges collects the offset ranges of the file's import
+// declarations: a whole GenDecl — the keyword, the optional parens and
+// every spec, blank imports included — drops out of tokenization under
+// ignore_imports (upstream excludes import/export/part directives).
+func dupImportRanges(f *ast.File, base int) [][2]int {
+	if f == nil {
+		return nil
+	}
+	var ranges [][2]int
+	for _, decl := range f.Decls {
+		if gd, ok := decl.(*ast.GenDecl); ok && gd.Tok == token.IMPORT {
+			ranges = append(ranges, [2]int{int(gd.Pos()) - base, int(gd.End()) - base})
+		}
+	}
+	return ranges
+}
+
+// inDupRanges reports whether the offset falls inside any [start, end)
+// range.
+func inDupRanges(offset int, ranges [][2]int) bool {
+	for _, r := range ranges {
+		if offset >= r[0] && offset < r[1] {
+			return true
+		}
+	}
+	return false
+}
+
 // dupNormalize masks one token's value for hashing: under ignore_literals
 // string literals become $STR and numeric (int, float, imaginary, rune)
-// literals $NUM; under ignore_locals an identifier declared in one of the
-// outermost function scopes becomes that scope's $L placeholder. The API
-// surface — called functions and methods, types, field references,
-// package-level identifiers — keeps its lexeme. Go string literals are
-// single opaque tokens (there is no interpolation), so masking never
-// splits a string.
+// literals $NUM; under ignore_identifiers every identifier becomes $ID —
+// structure-only matching (CPD --ignore-identifiers; Go's predeclared
+// builtins are plain identifiers, so masking token.IDENT covers them);
+// under ignore_locals an identifier declared in one of the outermost
+// function scopes becomes that scope's $L placeholder. The API surface —
+// called functions and methods, types, field references, package-level
+// identifiers — keeps its lexeme unless ignore_identifiers masks it. Go
+// string literals are single opaque tokens (there is no interpolation),
+// so masking never splits a string.
 func dupNormalize(value string, tok token.Token, offset int, scopes []*dupScope, opts dupOptions) string {
 	if opts.ignoreLiterals {
 		switch tok {
@@ -302,6 +438,9 @@ func dupNormalize(value string, tok token.Token, offset int, scopes []*dupScope,
 	}
 	if tok != token.IDENT {
 		return value
+	}
+	if opts.ignoreIdentifiers {
+		return "$ID"
 	}
 	if scope := dupScopeAt(scopes, offset); scope != nil && scope.names[value] {
 		return scope.placeholderFor(value)
@@ -349,20 +488,16 @@ func dupScopeAt(scopes []*dupScope, offset int) *dupScope {
 	return nil
 }
 
-// collectDupScopes parses src and collects its outermost function scopes:
+// collectDupScopes collects the parsed file's outermost function scopes:
 // one per FuncDecl and one per function literal not nested in another
 // function; nested literals share the enclosing scope, and everything
 // declared inside them folds into it. Scope bounds are 0-based offsets
-// into src (the parse FileSet has its own base). Scopes are sorted and
-// disjoint. A file with no parse tree gets no scopes and keeps its raw
-// token stream.
-func collectDupScopes(src []byte) []*dupScope {
-	fset := token.NewFileSet()
-	f, _ := parser.ParseFile(fset, "", src, 0)
+// into src (base is the parse FileSet's base). Scopes are sorted and
+// disjoint. A nil file yields no scopes.
+func collectDupScopes(f *ast.File, base int) []*dupScope {
 	if f == nil {
 		return nil
 	}
-	base := fset.File(f.Package).Base()
 	var scopes []*dupScope
 	ast.Inspect(f, func(n ast.Node) bool {
 		switch fn := n.(type) {
@@ -493,22 +628,57 @@ type dupPos struct {
 	token int
 }
 
+// dupOcc is one occurrence of a clone group: the token range [start, end)
+// of one file.
+type dupOcc struct {
+	file  int
+	start int
+	end   int
+}
+
+// dupGroup is one candidate clone group: occurrences of the same token
+// block, each spanning the same token count.
+type dupGroup struct {
+	occurrences []dupOcc
+}
+
+// tokenCount is the token count shared by every occurrence.
+func (g *dupGroup) tokenCount() int {
+	return g.occurrences[0].end - g.occurrences[0].start
+}
+
 // dupHashBase is the Rabin-Karp rolling base (upstream's 2^64/φ constant).
 const dupHashBase = 0x9e3779b97f4a7c15
 
-// detectDuplicates indexes every valid minTokens-token window of every
-// file under a rolling hash, then marks the tokens of all windows whose
-// hash occurred at least twice — within or across files. Two passes: the
-// raw pass compares lexemes (Type-1 copy-paste) and runs whenever
-// ignore_locals is enabled; the masked pass compares normalized values.
-// The union of both is reported, so enabling ignore_locals can only add
-// findings, never lose exact copies whose enclosing scopes shift
-// placeholder numbering.
-func detectDuplicates(files []dupFile, opts dupOptions) {
+// detectDupGroups detects duplicated blocks, marks the involved tokens and
+// returns the accepted clone groups (longest first, non-overlapping — the
+// PMD CPD Match semantics). Two passes: the raw pass compares lexemes
+// (Type-1 copy-paste) and runs whenever ignore_locals is enabled; the
+// masked pass compares normalized values. Candidates from both passes
+// compete in one greedy selection, so a longer renamed clone wins over the
+// shorter exact copy it contains.
+func detectDupGroups(files []dupFile, opts dupOptions) []dupGroup {
+	var candidates []dupGroup
 	if opts.ignoreLocals {
-		markDupWindows(files, opts, dupRawCode)
+		candidates = append(candidates, collectDupGroups(files, opts, dupRawCode)...)
 	}
-	markDupWindows(files, opts, dupMaskedCode)
+	candidates = append(candidates, collectDupGroups(files, opts, dupMaskedCode)...)
+	// Longest clones first, then most occurrences, then position — the
+	// selection order that keeps reporting deterministic.
+	sort.Slice(candidates, func(i, j int) bool {
+		a, b := candidates[i], candidates[j]
+		if a.tokenCount() != b.tokenCount() {
+			return a.tokenCount() > b.tokenCount()
+		}
+		if len(a.occurrences) != len(b.occurrences) {
+			return len(a.occurrences) > len(b.occurrences)
+		}
+		if a.occurrences[0].file != b.occurrences[0].file {
+			return a.occurrences[0].file < b.occurrences[0].file
+		}
+		return a.occurrences[0].start < b.occurrences[0].start
+	})
+	return acceptDupGroups(files, candidates)
 }
 
 // dupRawCode hashes a token's raw lexeme; dupMaskedCode hashes its masked
@@ -517,25 +687,137 @@ func dupRawCode(t dupToken) uint64 { return dupHash(t.lexeme) }
 
 func dupMaskedCode(t dupToken) uint64 { return dupHash(t.value) }
 
-// markDupWindows runs one detection pass over the given token codes of
-// every file and marks the tokens of all windows that occurred at least
-// twice. Marks accumulate on the shared token slices, so passes union.
-func markDupWindows(files []dupFile, opts dupOptions, code func(dupToken) uint64) {
+// acceptDupGroups greedily accepts groups whose occurrences overlap no
+// already-accepted range of their file and marks their tokens (the marks
+// drive the percentage report).
+func acceptDupGroups(files []dupFile, candidates []dupGroup) []dupGroup {
+	var accepted []dupGroup
+	taken := map[int][][2]int{}
+	for _, group := range candidates {
+		overlaps := false
+		for _, o := range group.occurrences {
+			if dupOverlaps(taken[o.file], o.start, o.end) {
+				overlaps = true
+				break
+			}
+		}
+		if overlaps {
+			continue
+		}
+		for _, o := range group.occurrences {
+			taken[o.file] = append(taken[o.file], [2]int{o.start, o.end})
+			tokens := files[o.file].tokens
+			for i := o.start; i < o.end; i++ {
+				tokens[i].dup = true
+			}
+		}
+		accepted = append(accepted, group)
+	}
+	return accepted
+}
+
+// dupOverlaps reports whether [start, end) intersects any accepted range.
+func dupOverlaps(ranges [][2]int, start, end int) bool {
+	for _, r := range ranges {
+		if start < r[1] && r[0] < end {
+			return true
+		}
+	}
+	return false
+}
+
+// collectDupGroups runs one detection pass over the given token codes of
+// every file and turns every bucket of at least two window positions into
+// a candidate clone group.
+func collectDupGroups(files []dupFile, opts dupOptions, code func(dupToken) uint64) []dupGroup {
 	occurrences := map[uint64][]dupPos{}
 	for i := range files {
 		indexDupFile(&files[i], i, opts, code, occurrences)
 	}
+	codes := make([][]uint64, len(files))
+	for i := range files {
+		c := make([]uint64, len(files[i].tokens))
+		for j, t := range files[i].tokens {
+			c[j] = code(t)
+		}
+		codes[i] = c
+	}
+	var groups []dupGroup
 	for _, positions := range occurrences {
 		if len(positions) < 2 {
 			continue
 		}
-		for _, pos := range positions {
-			tokens := files[pos.file].tokens
-			for i := pos.token; i < pos.token+opts.minTokens && i < len(tokens); i++ {
-				tokens[i].dup = true
-			}
+		if g, ok := dupGroupFromBucket(files, positions, codes, opts); ok {
+			groups = append(groups, g)
 		}
 	}
+	return groups
+}
+
+// dupGroupFromBucket builds one candidate clone group from a bucket of
+// window positions: the windows are verified against the bucket reference
+// by actual code equality (Rabin-Karp fingerprints can collide), extended
+// to the maximal extent all occurrences share, and clipped to the common
+// token count. ok=false when the bucket holds no real duplicate of at
+// least minLines lines.
+func dupGroupFromBucket(files []dupFile, positions []dupPos, codes [][]uint64, opts dupOptions) (dupGroup, bool) {
+	ref := positions[0]
+	var occs []dupPos
+	var extents [][2]int
+	for _, pos := range positions {
+		if !sameDupWindow(codes[pos.file], pos.token, codes[ref.file], ref.token, opts.minTokens) {
+			continue // fingerprint collision, not a real duplicate
+		}
+		occs = append(occs, pos)
+		extents = append(extents, dupExtent(codes[pos.file], pos.token, codes[ref.file], ref.token, opts.minTokens))
+	}
+	if len(occs) < 2 {
+		return dupGroup{}, false
+	}
+	// Every verified occurrence's extent contains its window, so the
+	// common length is the window size (upstream's min-clamp over the
+	// extents is inert by the same argument): the reference is anchored
+	// at its own window and never extends against itself — that would
+	// grow it over the whole file — while each other occurrence anchors
+	// at its shared extent start.
+	common := opts.minTokens
+	refTokens := files[occs[0].file].tokens
+	refStart := occs[0].token
+	if refTokens[refStart+common-1].line-refTokens[refStart].line+1 < opts.minLines {
+		return dupGroup{}, false
+	}
+	group := dupGroup{occurrences: []dupOcc{{file: occs[0].file, start: refStart, end: refStart + common}}}
+	for i := 1; i < len(occs); i++ {
+		group.occurrences = append(group.occurrences, dupOcc{file: occs[i].file, start: extents[i][0], end: extents[i][0] + common})
+	}
+	return group, true
+}
+
+// sameDupWindow reports whether the two token windows are equal by code.
+func sameDupWindow(a []uint64, aStart int, b []uint64, bStart, length int) bool {
+	for i := range length {
+		if a[aStart+i] != b[bStart+i] {
+			return false
+		}
+	}
+	return true
+}
+
+// dupExtent grows the window at curStart to the maximal extent shared with
+// the reference window at refStart: left and right while the surrounding
+// codes match.
+func dupExtent(cur []uint64, curStart int, ref []uint64, refStart, minTokens int) [2]int {
+	start, refS := curStart, refStart
+	for start > 0 && refS > 0 && cur[start-1] == ref[refS-1] {
+		start--
+		refS--
+	}
+	end, refE := curStart+minTokens, refStart+minTokens
+	for end < len(cur) && refE < len(ref) && cur[end] == ref[refE] {
+		end++
+		refE++
+	}
+	return [2]int{start, end}
 }
 
 // indexDupFile slides a Rabin-Karp window of minTokens token codes over
@@ -615,6 +897,46 @@ func buildDuplicationResult(files []dupFile, root string, threshold float64) dup
 	}
 	if totalLines > 0 {
 		result.percent = float64(dupLines) / float64(totalLines) * 100
+	}
+	if len(result.violations) > 0 {
+		result.summary = fmt.Sprintf("%d/%d files over %g%% duplication", len(result.violations), len(files), threshold)
+	} else {
+		result.summary = fmt.Sprintf("%d files, %.2f%% duplicated lines", len(files), result.percent)
+	}
+	return result
+}
+
+// buildClonesResult reports one violation per clone group (PMD CPD style):
+// every occurrence location in the message, groups in the accepted
+// longest-first order.
+func buildClonesResult(files []dupFile, groups []dupGroup, root string, opts dupOptions) duplicationResult {
+	result := duplicationResult{files: len(files)}
+	for _, group := range groups {
+		occs := group.occurrences
+		first := files[occs[0].file]
+		locations := make([]string, 0, len(occs))
+		for _, o := range occs {
+			tokens := files[o.file].tokens
+			locations = append(locations, fmt.Sprintf("%s:%d-%d",
+				relPath(root, files[o.file].path), tokens[o.start].line, tokens[o.end-1].line))
+		}
+		shown, more := locations, ""
+		if len(locations) > 3 {
+			shown, more = locations[:3], fmt.Sprintf(" (+%d more)", len(locations)-3)
+		}
+		refTokens := first.tokens
+		lineSpan := refTokens[occs[0].end-1].line - refTokens[occs[0].start].line + 1
+		result.violations = append(result.violations, DuplicationViolation{
+			Path: relPath(root, first.path),
+			Line: refTokens[occs[0].start].line,
+			Message: fmt.Sprintf("clone: %d tokens / %d lines, %d occurrences: %s%s",
+				group.tokenCount(), lineSpan, len(locations), strings.Join(shown, "; "), more),
+		})
+	}
+	if len(groups) == 0 {
+		result.summary = fmt.Sprintf("no clones >= %d lines across %d files", opts.minLines, len(files))
+	} else {
+		result.summary = fmt.Sprintf("%d clone groups (>= %d tokens, >= %d lines)", len(groups), opts.minTokens, opts.minLines)
 	}
 	return result
 }

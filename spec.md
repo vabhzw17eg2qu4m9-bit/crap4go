@@ -43,9 +43,12 @@ crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
 crap4go magic-constants [paths...] Flag magic literals; exit 2 on violations
 crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
 crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
-                                 [--exclude GLOB]... [--source PATH]...
-                                 [--ignore-locals] [--ignore-literals] [paths...]
-                                 Flag files over N% duplicated lines; exit 2
+                   [--report percentage|clones] [--exclude GLOB]...
+                   [--source PATH]... [--ignore-locals] [--ignore-literals]
+                   [--ignore-identifiers] [--ignore-imports]
+                   [--skip-duplicate-files] [paths...]
+                   Flag files over N% duplicated lines (or report clone
+                   groups); exit 2
 crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
                                  [--timeout-seconds N] [--max-mutants N]
                                  [--operators LIST] [--exclude GLOB]... [paths...]
@@ -306,7 +309,10 @@ spec are ported with Go adaptations as described below; `magic-constants`
 comes from 0.6.0 (§11.13) with the 0.7–0.9 precision fixes,
 `test-assertions` (§11.15) and `folder-structure` (§11.16) from 0.9, and
 `duplicates` (§11.11) from 0.2.0 with 0.2.1's whole-file tokenization and
-the per-gate `sources` key from dc64e9c. `mutation` (§11.22) comes from
+the per-gate `sources` key from dc64e9c; the CPD-parity clone machinery —
+`--report clones`, `--ignore-identifiers`, `--ignore-imports`,
+`--skip-duplicate-files`, token-equality window verification and
+shared-extent anchoring — ports d6c3ab6. `mutation` (§11.22) comes from
 c865ec3 (the unclebob/mutator research): the operator table, coverage
 gating, per-mutant test re-run and survivor violations port directly —
 Dart's `/`→`~/` row is dropped (Go integer division already truncates),
@@ -548,8 +554,10 @@ packages (max 0)`) plus a summary. Exit code 2 iff violations.
 
 ```
 crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
-                   [--exclude GLOB]... [--source PATH]...
-                   [--ignore-locals] [--ignore-literals] [paths...]
+                   [--report percentage|clones] [--exclude GLOB]...
+                   [--source PATH]... [--ignore-locals] [--ignore-literals]
+                   [--ignore-identifiers] [--ignore-imports]
+                   [--skip-duplicate-files] [paths...]
 ```
 
 Go adaptation of crap4dart's `duplication` gate (§11.11): detects exact
@@ -561,11 +569,21 @@ is a sequence of at least `--min-tokens` (default 50) tokens spanning at
 least `--min-lines` (default 5) source lines that appears at least twice,
 within or across files: every file in the scan is indexed together with a
 Rabin-Karp rolling hash over the token stream (the port convention for
-upstream's hash window), and every window whose hash occurs at least twice
-marks its tokens as duplicated.
+upstream's hash window). Buckets of at least two windows become candidate
+clone groups: each window is verified against the bucket reference by
+actual token equality (rolling-hash collisions do not count), and each
+occurrence is extended left and right to the maximal extent all
+occurrences share — the reference stays anchored at its own window, and
+the common length is the window size, so non-reference occurrences anchor
+at the shared extent start. Candidates from the passes below compete in
+one greedy selection — longest clone first, then most occurrences, then
+position — and a group is accepted only when none of its occurrences
+overlaps an already-accepted range of its file (the PMD CPD Match
+semantics); accepted groups mark their tokens for the percentage report.
 
-Two opt-in normalizations extend detection to renamed clones
-("Type-2", from upstream 0599df2 + 94299e0). `--ignore-locals` renames
+Opt-in normalizations extend detection to renamed clones and noisier
+sources ("Type-2" renamed clones come from upstream 0599df2 + 94299e0;
+the CPD-parity knobs from d6c3ab6). `--ignore-locals` renames
 identifiers declared inside an outermost function scope — the receiver
 name (a local binding; the fields it selects are API state), named
 parameters and named results, type parameters, `:=` locals including
@@ -579,10 +597,23 @@ lexeme. Go string literals are single opaque tokens (there is no
 interpolation), so nothing else changes under this mode.
 `--ignore-literals` replaces string literals with `$STR` and numeric
 literals (int, float, imaginary, rune) with `$NUM` before hashing.
+`--ignore-identifiers` replaces every identifier with one `$ID`
+placeholder before hashing — structure-only matching (CPD
+`--ignore-identifiers`); Go has no built-in/pseudo keyword ambiguity, so
+masking `token.IDENT` covers the predeclared builtins (`len`, `append`,
+`make`, `panic`, ...) the way upstream's mask list does. Keywords,
+operators and literals keep their lexemes.
+`--ignore-imports` excludes import declarations from tokenization — the
+whole declaration (keyword, parens, every spec, blank imports included)
+drops out, the boilerplate that otherwise inflates duplication.
+`--skip-duplicate-files` analyzes a file whose token stream (by masked
+value) equals an earlier file's only once, so a copied file is reported
+as one clone group instead of N×N pairs (CPD `--skip-duplicate-files`).
 Detection is a union of two passes: the raw-lexeme pass always runs
 alongside the masked one when `--ignore-locals` is set, so exact copies
-are never lost when enclosing scopes shift placeholder numbering. With
-both flags off the gate reports exact copy-paste only.
+are never lost when enclosing scopes shift placeholder numbering, and
+candidates from both passes compete in the same greedy selection. With
+every flag off the gate reports exact copy-paste only.
 
 Scan scope: the normal analyze selection (default walk or explicit paths),
 unioned with every repeatable `--source` path resolved against the project
@@ -597,14 +628,22 @@ are skipped; the default is the port's standard source exclusions,
 with fewer than `--min-tokens` tokens are skipped from the scan and its
 summary.
 
-A file violates when its percentage of duplicated lines — distinct lines
-holding duplicated tokens over its total line count — is strictly over
-`--threshold` (default 1.0). Output: one line per violation
+`--report` selects what violations are reported for. `percentage` (the
+default) keeps the historical behavior: a file violates when its
+percentage of duplicated lines — distinct lines holding duplicated tokens
+over its total line count — is strictly over `--threshold` (default 1.0);
+output is one line per violation
 (`<path>:<first duplicated line>: <pct>% duplicated lines > <threshold>%`)
 plus a summary: pass `N files, P.PP% duplicated lines`, fail
 `M/N files over T% duplication`, where N counts the tokenized files.
-Exit code 2 iff there are violations; `no files with enough tokens` with
-exit 0 when no file clears the token minimum.
+`clones` reports PMD-CPD-style clone groups: one violation per accepted
+non-overlapping group (longest first), with every occurrence location in
+the message — `clone: T tokens / L lines, K occurrences:
+<path>:<first>-<last>; ...` (the first three locations, then
+`(+N more)`) — plus a summary `K clone groups (>= T tokens, >= L lines)`
+or, on a clean scan, `no clones >= L lines across N files`. Exit code 2
+iff there are violations; `no files with enough tokens` with exit 0 when
+no file clears the token minimum.
 
 ## 22. `mutation`
 

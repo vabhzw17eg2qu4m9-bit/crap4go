@@ -159,8 +159,18 @@ locals swapped against each other never match; detection becomes a union
 of the raw-lexeme pass and the masked pass, so exact copies are never
 lost when enclosing scopes shift placeholder numbering.
 `--ignore-literals` replaces string and numeric literals with `$STR`/
-`$NUM` placeholders. Both are off by default: the default mode reports
-exact copy-paste only.
+`$NUM` placeholders; `--ignore-identifiers` collapses every identifier —
+API surface included (Go's predeclared builtins are plain identifiers) —
+into one `$ID` placeholder for structure-only matching;
+`--ignore-imports` drops import declarations from tokenization;
+`--skip-duplicate-files` analyzes a token-identical file once. Windows
+are verified by token equality before reporting (rolling-hash collisions
+do not count) and occurrences anchor at the maximal extent all of them
+share. All knobs are off by default: the default mode reports exact
+copy-paste only. `--report clones` switches to PMD-CPD-style reporting —
+one violation per non-overlapping clone group (longest first) with every
+occurrence location in the message — while the default `percentage`
+keeps the per-file duplicated-line report.
 
 `mutation` (ported from crap4dart c865ec3, adapted from the
 unclebob/mutator research) is mutation testing: a declarative operator
