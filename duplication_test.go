@@ -196,6 +196,7 @@ func TestRun_DuplicatesBadFlags(t *testing.T) {
 	for _, args := range [][]string{
 		{"duplicates", "--min-tokens", "0"},
 		{"duplicates", "--min-lines", "-1"},
+		{"duplicates", "--report", "pmd"},
 		{"duplicates", "--ignore-localss"},
 		{"duplicates", "--nope"},
 	} {
@@ -604,5 +605,206 @@ func TestRun_DuplicatesIgnoreLocalsKeepsReceiverFieldsVisible(t *testing.T) {
 		repoBody("rb", "Repo", "load", "cache", "key", "val"))
 	if code != 2 {
 		t.Fatalf("exit = %d, want 2 (renamed receiver and locals still match):\n%s", code, out)
+	}
+}
+
+// --- CPD parity (ported from crap4dart d6c3ab6): --report clones,
+// --ignore-identifiers, --ignore-imports, --skip-duplicate-files. The
+// knobs and the clones mode are pure additions — these tests are
+// regression pins, not killing tests. ---
+
+// clonesDupPair runs the duplicates subcommand over two files with the
+// given flags and returns the output and exit code.
+func clonesDupPair(t *testing.T, args []string, a, b string) (string, int) {
+	t.Helper()
+	return runDupPair(t, append([]string{"--report", "clones"}, args...), a, b)
+}
+
+// TestRun_DuplicatesClonesReport pins the clones report: percentage stays
+// the default, and --report clones emits one violation per non-overlapping
+// clone group with every occurrence location in the message. The group
+// keeps the reference window's token count (upstream anchors the common
+// length at minTokens).
+func TestRun_DuplicatesClonesReport(t *testing.T) {
+	out, code := clonesDupPair(t, nil, dupBlock(), dupBlock())
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2:\n%s", code, out)
+	}
+	if want := "1 clone groups (>= 50 tokens, >= 5 lines)"; !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
+	}
+	if !strings.Contains(out, "clone: 50 tokens / ") {
+		t.Errorf("output missing the window-sized clone group:\n%s", out)
+	}
+	if !strings.Contains(out, "2 occurrences: type2a.go:1-") || !strings.Contains(out, "; type2b.go:1-") {
+		t.Errorf("output missing both clone locations:\n%s", out)
+	}
+
+	// Distinct files pass with the no-clones summary.
+	out, code = clonesDupPair(t, nil, cleanBlock(100), cleanBlock(200))
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0:\n%s", code, out)
+	}
+	if want := "no clones >= 5 lines across 2 files"; !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
+	}
+}
+
+// TestRun_DuplicatesClonesSharedExtent pins the shared-extent extension:
+// each occurrence is anchored at the maximal start all occurrences share,
+// not at its seed window. Two identical files open with a 100+-token
+// single-line head, so the seed windows near the head are filtered by
+// --min-lines and the first recorded window starts mid-file — yet the
+// accepted occurrence still reaches back to token 0 (line 1).
+func TestRun_DuplicatesClonesSharedExtent(t *testing.T) {
+	var head strings.Builder
+	head.WriteString("var seed = []int{0")
+	for i := range 60 {
+		fmt.Fprintf(&head, ", %d", i+1)
+	}
+	head.WriteString("}\n") // ~120 tokens on one line
+	tail := "for i := range items {\n\ttotal += i * 2\n\tif total > 100 {\n\t\ttotal -= i\n\t}\n}\n_ = total\n"
+	file := head.String() + tail
+	out, code := clonesDupPair(t, nil, file, file)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2:\n%s", code, out)
+	}
+	if !strings.Contains(out, "2 occurrences: type2a.go:3-") {
+		t.Errorf("reference must anchor at its mid-file seed window (line 3):\n%s", out)
+	}
+	if !strings.Contains(out, "; type2b.go:1-3") {
+		t.Errorf("occurrence must extend back to the shared extent (line 1):\n%s", out)
+	}
+}
+
+// TestRun_DuplicatesIgnoreIdentifiersMasksAPISurface pins structure-only
+// matching: every identifier — API surface included, Go's predeclared
+// builtins are plain identifiers — collapses to $ID, so clones renamed
+// anywhere match under --ignore-identifiers while --ignore-locals (which
+// keeps API names visible) still separates them.
+func TestRun_DuplicatesIgnoreIdentifiersMasksAPISurface(t *testing.T) {
+	a := calleeBody("process", "value", "result", "i", "item", "wrap")
+	b := calleeBody("handle", "data", "sink", "n", "entry", "fold")
+	out, code := clonesDupPair(t, []string{"--ignore-identifiers"}, a, b)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (all identifiers masked):\n%s", code, out)
+	}
+	out, code = clonesDupPair(t, []string{"--ignore-locals"}, a, b)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (ignore-locals keeps API names visible):\n%s", code, out)
+	}
+}
+
+func TestTokenizeGoIgnoreIdentifiers(t *testing.T) {
+	src := []byte("package demo\n\nfunc calc(alpha int) int {\n\treturn len(alpha) + cap(alpha)\n}\n")
+	tokens := tokenizeGo(src, dupOptions{ignoreIdentifiers: true})
+	values := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		values = append(values, tok.value)
+	}
+	got := strings.Join(values, " ")
+	// Every identifier masks — locals, the function name, the package
+	// name, and predeclared builtins like len/cap/int — while keywords
+	// stay.
+	want := "package $ID func $ID ( $ID $ID ) $ID { return $ID ( $ID ) + $ID ( $ID ) }"
+	if got != want {
+		t.Fatalf("tokens = %q, want %q", got, want)
+	}
+}
+
+// TestRun_DuplicatesIgnoreImportsDropsBoilerplate pins that import
+// declarations drop out of tokenization: the shared import block pushes
+// the copies over --min-tokens without the flag, and under
+// --ignore-imports only the sub-minimum function remains. Blank imports
+// drop with the whole declaration.
+func TestRun_DuplicatesIgnoreImportsDropsBoilerplate(t *testing.T) {
+	imports := "import (\n\t\"fmt\"\n\t\"strings\"\n\t\"sort\"\n\t\"errors\"\n\t\"strconv\"\n\t_ \"embed\"\n)\n"
+	tiny := "func tiny(items []string) string {\n\tif len(items) == 0 {\n\t\treturn \"\"\n\t}\n\treturn strings.Join(items, \",\")\n}\n"
+	file := imports + tiny
+	out, code := clonesDupPair(t, []string{"--min-tokens", "40"}, file, file)
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (imports + body clear min-tokens):\n%s", code, out)
+	}
+	out, code = clonesDupPair(t, []string{"--min-tokens", "40", "--ignore-imports"}, file, file)
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (only the tiny function remains):\n%s", code, out)
+	}
+}
+
+func TestTokenizeGoIgnoreImports(t *testing.T) {
+	src := []byte("package demo\n\nimport (\n\t\"fmt\"\n\t_ \"embed\"\n)\n\nvar n = 1\n")
+	tokens := tokenizeGo(src, dupOptions{ignoreImports: true})
+	values := make([]string, 0, len(tokens))
+	for _, tok := range tokens {
+		values = append(values, tok.value)
+	}
+	if got, want := strings.Join(values, " "), "package demo var n = 1"; got != want {
+		t.Fatalf("tokens = %q, want %q", got, want)
+	}
+}
+
+// TestRun_DuplicatesSkipDuplicateFiles pins CPD --skip-duplicate-files: a
+// token-identical file is analyzed once, so a copied file is reported as
+// one clone group without the flag and vanishes with it.
+func TestRun_DuplicatesSkipDuplicateFiles(t *testing.T) {
+	out, code := clonesDupPair(t, []string{"--skip-duplicate-files"}, dupBlock(), dupBlock())
+	if code != 0 {
+		t.Fatalf("exit = %d, want 0 (copied file analyzed once):\n%s", code, out)
+	}
+	if want := "no clones >= 5 lines across 1 files"; !strings.Contains(out, want) {
+		t.Errorf("output missing %q:\n%s", want, out)
+	}
+	out, code = clonesDupPair(t, nil, dupBlock(), dupBlock())
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2 (without the flag the copy is a clone):\n%s", code, out)
+	}
+}
+
+// TestDupGroupFromBucket pins the bucket semantics: fingerprint collisions
+// are dropped by token equality, the reference anchors at its own window,
+// other occurrences anchor at their shared extent start, and the minLines
+// check runs over the accepted group's span.
+func TestDupGroupFromBucket(t *testing.T) {
+	tokens := func(lines ...int) []dupToken {
+		out := make([]dupToken, len(lines))
+		for i, line := range lines {
+			out[i] = dupToken{lexeme: "x", value: "x", line: line}
+		}
+		return out
+	}
+	files := []dupFile{
+		{path: "a.go", tokens: tokens(1, 2, 3, 4, 5, 6)},
+		{path: "b.go", tokens: tokens(1, 2, 3, 4, 5, 6)},
+	}
+	opts := dupOptions{minTokens: 3, minLines: 2}
+	positions := []dupPos{{file: 0, token: 2}, {file: 1, token: 2}}
+
+	same := [][]uint64{{10, 20, 30, 40, 50, 60}, {10, 20, 30, 40, 50, 60}}
+	group, ok := dupGroupFromBucket(files, positions, same, opts)
+	if !ok {
+		t.Fatal("identical windows must form a group")
+	}
+	want := dupGroup{occurrences: []dupOcc{{file: 0, start: 2, end: 5}, {file: 1, start: 0, end: 3}}}
+	if group.occurrences[0] != want.occurrences[0] || group.occurrences[1] != want.occurrences[1] {
+		t.Errorf("occurrences = %v, want %v (reference at its window, other at shared extent start)", group.occurrences, want.occurrences)
+	}
+	if group.tokenCount() != 3 {
+		t.Errorf("tokenCount = %d, want 3", group.tokenCount())
+	}
+
+	// A hash collision — the windows differ by token equality — yields
+	// no group.
+	collide := [][]uint64{{10, 20, 30, 40, 50, 60}, {10, 20, 30, 99, 50, 60}}
+	if _, ok := dupGroupFromBucket(files, positions, collide, opts); ok {
+		t.Error("colliding windows must not form a group")
+	}
+
+	// A group whose span is under minLines yields no group.
+	flat := []dupFile{
+		{path: "a.go", tokens: tokens(1, 1, 1, 1, 1, 1)},
+		{path: "b.go", tokens: tokens(1, 1, 1, 1, 1, 1)},
+	}
+	if _, ok := dupGroupFromBucket(flat, positions, same, opts); ok {
+		t.Error("sub-minLines windows must not form a group")
 	}
 }
