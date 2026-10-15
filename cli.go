@@ -25,6 +25,10 @@ Subcommands (must be the first argument):
     --top <N>                      Console rows shown (default 20)
   crap4go file-naming [paths...]   Flag mechanical file names; exit 2 on violations
   crap4go nesting [paths...]       Flag functions nested deeper than 5; exit 2 on violations
+  crap4go complexity [--metric cyclomatic|cognitive] [--max N] [--count-lambdas]
+                    [paths...]
+                                   Flag functions over the complexity limit
+                                   (default max 10, cyclomatic); exit 2 on violations
   crap4go class-size [paths...]    Flag types with >25 methods or WMC >80; exit 2
   crap4go weight-of-class [paths...] Flag data-heavy exported structs; exit 2
   crap4go unused-code [paths...]   Flag unexported declarations never referenced; exit 2
@@ -147,6 +151,7 @@ func runWithRoot(args []string, root string, stdout, stderr io.Writer) int {
 var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"file-naming":      RunFileNamingCommand,
 	"nesting":          RunNestingCommand,
+	"complexity":       RunComplexityCommand,
 	"class-size":       RunClassSizeCommand,
 	"weight-of-class":  RunWeightOfClassCommand,
 	"unused-code":      RunUnusedCodeCommand,
