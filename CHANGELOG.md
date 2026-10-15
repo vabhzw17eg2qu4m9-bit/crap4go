@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.11.0...v0.12.0) (2026-10-15)
+
+
+### Features
+
+* cognitive complexity metric option (SonarSource), type-switch/case-guard CC regression pins, flat else-if nesting ([#32](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/32)) ([49f09dd](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/49f09ddd5a38a699e8f5704d87c33612f54a3ace))
+
 ## [0.11.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.10.0...v0.11.0) (2026-10-11)
 
 
