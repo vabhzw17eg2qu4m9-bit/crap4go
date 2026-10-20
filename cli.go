@@ -39,6 +39,12 @@ Subcommands (must be the first argument):
                     [--exclude GLOB]... [--source PATH]...
                     [--ignore-locals] [--ignore-literals] [paths...]
                                    Flag files over N% duplicated lines; exit 2
+  crap4go similarity [--format console|json] [--jaccard F] [--containment F]
+                    [--min-shingles N] [--include GLOB]... [--exclude GLOB]...
+                    [--check] [dirs...]
+                                   Scan dirs for near-duplicate files and print
+                                   the clusters; exits 0 (explorer) unless
+                                   --check: then exit 2 on violations
   crap4go magic-constants [paths...] Flag magic literals (hex colors, repeats); exit 2
   crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
   crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
@@ -162,6 +168,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"test-assertions":  RunTestAssertionsCommand,
 	"folder-structure": RunFolderStructureCommand,
 	"mutation":         RunMutationCommand,
+	"similarity":       RunSimilarityCommand,
 }
 
 // runSubcommand executes a subcommand when args[0] exactly matches a known

@@ -53,6 +53,11 @@ crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
                                  [--timeout-seconds N] [--max-mutants N]
                                  [--operators LIST] [--exclude GLOB]... [paths...]
                                  Mutation-test covered sites; exit 2 on survivors
+crap4go similarity [--format console|json] [--jaccard F] [--containment F]
+                   [--min-shingles N] [--include GLOB]... [--exclude GLOB]...
+                   [--check] [dirs...]
+                                 Scan for near-duplicate files; exit 0 (explorer)
+                                 or, with --check, 2 on violations
 crap4go skill                    Print the crap4go profiling skill for AI agents
 ```
 
@@ -62,7 +67,7 @@ combined). Unknown flags are usage errors.
 **Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`duplicates`, `mutation`)
+`duplicates`, `mutation`, `similarity`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -319,7 +324,10 @@ Dart's `/`→`~/` row is dropped (Go integer division already truncates),
 `true`/`false` match predefined identifiers in expression position, the
 LCOV per-line hit map becomes the block-based cover profile flattened to
 per-line flags, and the yaml `enabled: false` knob becomes "subcommand
-only" (the analyze flow never runs gates).
+only" (the analyze flow never runs gates). `similarity` (§23) comes from
+2b21966: the upstream pair — opt-in gate (`enabled: false` yaml) plus an
+ad-hoc always-exit-0 command — collapses into one subcommand whose
+default run is the explorer and whose `--check` flag is the gate.
 Not applicable upstream changes: 0.5.2's profile part-of fix is Dart-only;
 0.6.0's baseline/severity/config knobs have no counterpart (no gate
 framework); 0.6.1's internal constants refactor changes no behavior;
@@ -764,13 +772,103 @@ once against the full invocation, and only the confirmed outcome is
 reported and cached; the summary gains
 `; test-scoped N (M re-confirmed killed)` when scoping confirmed kills.
 
-## 23. `skill`
+## 23. `similarity`
+
+```
+crap4go similarity [--format console|json] [--jaccard F] [--containment F]
+                   [--min-shingles N] [--include GLOB]... [--exclude GLOB]...
+                   [--check] [dirs...]
+```
+
+Go adaptation of crap4dart 2b21966's similarity feature (§11.23):
+file-level near-duplicate detection over any text corpus — copied docs
+that drifted apart, twin templates differing by a heading, stale
+snapshot copies, generated files duplicating their sources. Unlike
+`duplicates` (§21, token-level clone blocks inside Go code), each
+finding says "this file is (mostly) a copy of that file" — a structural
+problem (reuse the shared source, generate one of them, or delete the
+stale copy), not an extract-method refactor.
+
+The upstream split — an opt-in gate inside `check` (yaml
+`gates.similarity`, `enabled: false` default, kebab-case surface
+dirs/include/exclude/min_shingles/jaccard/containment with strict loader
+validation) plus an ad-hoc `similarity` command (threshold/include/
+exclude overrides, console + JSON, always exits 0) — collapses into one
+subcommand, the port's "yaml `enabled: false` becomes subcommand only"
+adaptation: the default run IS the upstream command (always exits 0,
+informational), and `--check` IS the gate — one violation line per
+clustered file naming its counterparts (first two, then `(+N more)`)
+and its strongest pair metrics, plus a summary, exit code 2 iff there
+are violations, 0 on a clean scan. The upstream config template block
+and gate-runner wiring have no counterpart (no config system, no check
+pipeline); the yaml keys map to flags — `dirs` to the positional
+directories (default `.`), `include`/`exclude` to repeatable flags,
+`min_shingles`/`jaccard`/`containment` to value flags, and the loader's
+strict validation to flag validation: `--jaccard`/`--containment` must
+be in [0,1], `--min-shingles` positive, `--format` console or json —
+violations are usage errors (exit 1).
+
+Engine: every scanned file becomes a set of 8-token shingles
+(`shingleSize`) of profile-normalized text. The profile comes from the
+extension: `.md`/`.markdown`/`.mdx` are markdown — fenced code blocks
+are dropped, only prose words compare; the code family (`.dart`, `.js`,
+`.ts`, `.java`, `.py`, `.go`, `.rs`, `.c`, ... the upstream extension
+list) strips line/block comments and import-family lines, lowercases
+identifiers and maps literals to placeholders (`S` strings, `N`
+numbers) so clones differing only in literal values still match;
+anything else compares as-is (word tokens of 2+ latin/cyrillic
+characters, lowercased — markdown uses the same word tokens). The Go
+adaptation for `.go` files: the token stream comes from `go/scanner`
+(the port convention, as in `duplicates`) — identifiers and keywords
+lowercased, string/rune literals → `S`, numbers → `N`, comments and
+operators never entering the stream, and whole import declarations
+dropped (the Go import family: single and parenthesized forms,
+blank/dot/alias specs included). Other code extensions keep the
+upstream language-agnostic line shaping (comment/import regexes across
+the `//|#|--|;` and import/require/using/... families). Fewer tokens
+than one shingle yield an empty set.
+
+A pair crosses when Jaccard (intersection over union) >= `--jaccard`
+(default 0.8) OR containment (intersection over the smaller set —
+catches a small file largely copied into a big one, where Jaccard stays
+low) >= `--containment` (default 0.95). Files with fewer shingles than
+`--min-shingles` (default 50) are skipped and counted in the report —
+tiny files carry no reliable signal. Crossing pairs merge transitively
+into clusters via union-find with path compression; clusters report
+largest first, pairs strongest (max Jaccard) first, and every file's
+metrics line names the strongest pair it participates in.
+
+Scan scope: the positional directories, resolved against the project
+root (absolute paths taken as-is), walked recursively — any file type,
+filtered by include then exclude globs on the project-relative path;
+missing directories are skipped silently. Defaults are the upstream
+gate's: include `**/*.md`, exclude `.git/**`, `build/**`,
+`coverage/**`, `node_modules/**` — with `.dart_tool/**` replaced by
+`vendor/**` (the Go port's standard exclusion, as in `duplicates`).
+Sort order is deterministic: files by path, clusters largest first with
+ties in scan order.
+
+Explorer output: a header (`similarity: N files scanned (M skipped
+below K shingles), thresholds jaccard >= J / containment >= C`), then
+`no similar files` or per-cluster blocks (`cluster I — F files:` with
+one `  path (jaccard X.XX, containment Y.YY)` line per member) and a
+`F files in C clusters` footer. `--format json` prints only JSON:
+`scanned`, `skipped`, `thresholds` (`jaccard`, `containment`,
+`min_shingles`), `pairs` (`a`, `b`, `jaccard`, `containment`, rounded
+to four decimals), `clusters` (`files`).
+
+Dogfooding (matching upstream's own md-corpus enablement at jaccard
+0.6 / containment 0.9): this repo's corpus (README.md, spec.md,
+CHANGELOG.md, 3 files, none below the 50-shingle floor) measures clean
+at 0.6/0.9 — and still clean at 0.5/0.85 and 0.2/0.3, a wide margin.
+
+## 24. `skill`
 
 Prints a Go-adapted version of crap4dart's profiling skill (when to profile,
 how the instrumentation works, how to read the report), ending with one line
 on installing it as an agent skill. Always exits 0.
 
-## 24. Threshold
+## 25. Threshold
 
 The threshold defaults to `8.0` and is overridable with `--threshold`. After
 the report is printed, the maximum numeric CRAP is compared against it; if
@@ -778,7 +876,7 @@ the report is printed, the maximum numeric CRAP is compared against it; if
 to stderr and the process exits 2. Otherwise the process exits 0. A threshold
 of `0` or less is a usage error.
 
-## 25. Exit codes
+## 26. Exit codes
 
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
@@ -788,16 +886,16 @@ of `0` or less is a usage error.
 |      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
 |      | `banned-imports`, `magic-constants`, `test-assertions`,                  |
-|      | `duplicates`, `folder-structure`, `mutation`). (Also reported on        |
-|      | stderr.)                                                                |
+|      | `duplicates`, `folder-structure`, `mutation`, `similarity --check`).     |
+|      | (Also reported on stderr.)                                              |
 
-## 26. `--run-tests`
+## 27. `--run-tests`
 
 Runs `go test ./... -coverprofile=coverage.out -covermode=atomic` in the
 project root, streaming stdout/stderr through. On non-zero exit, the error is
 printed to stderr and the process exits 1.
 
-## 27. Non-goals
+## 28. Non-goals
 
 - No type-checking or build verification — parsing only.
 - No HTML/branch coverage reports — only the statement-level cover profile.
