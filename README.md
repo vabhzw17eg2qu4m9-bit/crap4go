@@ -61,7 +61,7 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 `profile`, `skill`, and the gate subcommands (`file-naming`, `nesting`,
 `complexity`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`duplicates`) dispatch on the first argument only; anything else
+`duplicates`, `similarity`) dispatch on the first argument only; anything else
 takes the analyze path above.
 
 ```sh
@@ -78,6 +78,7 @@ crap4go magic-constants           # flag hex colors outside consts and repeated 
 crap4go test-assertions           # flag tests with no fail-capable calls (t.Error/Fatal/..., panic)
 crap4go folder-structure           # flag dirs with loose .go files at the module root
 crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks across modules
+crap4go similarity --check --jaccard 0.6 --containment 0.9   # flag whole-file near-duplicates; exit 2
 crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on survivors
 crap4go skill                     # print the profiling skill for AI agents
 ```
@@ -171,6 +172,33 @@ copy-paste only. `--report clones` switches to PMD-CPD-style reporting —
 one violation per non-overlapping clone group (longest first) with every
 occurrence location in the message — while the default `percentage`
 keeps the per-file duplicated-line report.
+
+`similarity` (ported from crap4dart 2b21966) is file-level near-duplicate
+detection over any text corpus: copied docs that drifted apart, twin
+templates, stale snapshot copies, generated files duplicating their
+sources. Unlike `duplicates` (token-level clone blocks inside Go code),
+each finding says "this file is (mostly) a copy of that file" — reuse,
+generate or delete, not extract-method. Every scanned file becomes a set
+of 8-token shingles of profile-normalized text: markdown files lose
+their fenced code blocks, source files lose comments and import
+declarations with string/number literals placeholdered (`S`/`N`) so
+literal-only differences never block a match (`.go` files tokenize via
+`go/scanner`, other code extensions via the language-agnostic shaping),
+anything else compares as-is. Pairs cross when Jaccard >= `--jaccard`
+(default 0.8) or containment of the smaller shingle set in the larger
+one >= `--containment` (default 0.95 — catches a small file copied into
+a big one), and transitively crossing pairs merge into clusters
+(union-find). Files with fewer than `--min-shingles` shingles (default
+50) are skipped — tiny files carry no reliable signal. Positional args
+are the directories scanned recursively (default `.`); `--include GLOB`
+(default `**/*.md`) and `--exclude GLOB` (repeatable; default
+`.git/**`, `build/**`, `coverage/**`, `node_modules/**`, `vendor/**`)
+filter by project-relative path. The default run is the upstream
+ad-hoc explorer — a console (or `--format json`) cluster report that
+always exits 0; `--check` turns it into the gate: one violation line
+per clustered file naming its counterparts and strongest metrics,
+exit 2 iff there are violations. Explore first, tune the thresholds,
+then run with `--check` in CI.
 
 `mutation` (ported from crap4dart c865ec3, adapted from the
 unclebob/mutator research) is mutation testing: a declarative operator
