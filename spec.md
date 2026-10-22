@@ -910,13 +910,15 @@ printed to stderr and the process exits 1.
 ## 29. `memory`
 
 ```
-crap4go memory [--format console|json] [--top <N>] [paths...]
+crap4go memory [--format console|json] [--top <N>] [--badge <path>]
+               [--badge-threshold <MB>] [paths...]
 ```
 
 Ported from crap4dart 3bae178bc0 (memory: per-test GC/alloc attribution
-via `--verbose_gc`, phase 1). Runs the test suite under GC tracing and
-attributes every GC event and its reclaimed memory to tests and
-packages, then reports allocation-churn and old-gen-growth hotspots.
+via `--verbose_gc`, phase 1) and 11551739c8 (per-isolate clocks +
+unattributed bucket + `--badge`, phase 2). Runs the test suite under GC
+tracing and attributes every GC event and its reclaimed memory to tests
+and packages, then reports allocation-churn and old-gen-growth hotspots.
 
 Tracing: `go test -v -count=1 -p 1 -exec 'env GODEBUG=gctrace=1'` —
 verbose for the `=== RUN` / `--- PASS` attribution markers, `-count=1`
@@ -937,14 +939,23 @@ paused `t.Parallel()` window; `=== NAME <name>` raises an open window to
 the top of the stack). A GC row lands on the innermost open window —
 subtest windows nest inside their parents, so the shorter span wins
 (upstream's nested-window rule). A GC row with no open window is
-pending; the next `ok <pkg>` / `FAIL <pkg>` summary flushes pending rows
-onto that package's entry — test-binary loading and teardown GCs count
-toward package totals only, never a test's (upstream: loading GCs count
-toward file totals only). A `?  <pkg>  [no test files]` summary discards
-pending rows: no test binary ran for that package. Because `-p 1` runs
-one test binary at a time, a pending bucket can never span two binaries.
-A GC row after `--- PASS` but before the next `=== RUN` must not leak
-into either test — it is pending by construction (killing test
+UNATTRIBUTED: only rows INSIDE test windows are trusted, so
+test-binary loading GCs (before the first `=== RUN`), teardown GCs
+(after the last `--- PASS`) and rows between suites land in the
+report's unattributed bucket — reported (console line, JSON
+`unattributedGcs`/`unattributedChurnMb`), never polluting test or
+package totals (upstream phase 2: rows outside a suite's test windows
+never pollute file totals; killing test
+`TestBoundaryGcDoesNotLeakIntoNextTest` — a teardown GC after the last
+`--- PASS` must not leak into the last test or the package entry).
+A `?  <pkg>  [no test files]` summary discards pending rows entirely:
+no test binary ran for that package, so they are not even suite churn
+(`TestDiscardBeforeNoTestFiles`). Because `-p 1` runs one test binary
+at a time, a pending bucket can never span two binaries. Upstream's
+phase-2 seq-continuation guard (a row continuing the previous isolate's
+GC numbering returns to it) has no Go analog: there is one stream and
+the window stack already routes rows; a row after `--- PASS` but before
+the next `=== RUN` is unattributed by construction (killing test
 `TestBoundaryGcDoesNotLeakIntoNextTest`).
 
 Markers are matched at ANY indentation, and nesting comes from the
@@ -964,11 +975,16 @@ a fragment — its churn is honestly lost and it must never parse as a row
 or swallow a glued marker; a result word without its duration is dropped
 (Killing tests in `TestTornRowsKeepChurnAndMarkers`).
 
-There is no clock-offset vote: upstream votes one global offset per
-suite from (last GC − last test end) at the 90th percentile because the
-Dart VM's GC clock and the JSON reporter's wall clock are different
-clocks; here markers and GC rows share one stream, so attribution needs
-no clock math and the JSON omits `clockOffsetSeconds`.
+There is no clock-offset machinery: upstream's phase 1 voted one global
+offset per suite from (last GC − last test end) at the 90th percentile
+because the Dart VM's GC clock and the JSON reporter's wall clock are
+different clocks, and its phase 2 (11551739c8) replaced that vote with
+per-suite windows anchored at the isolate-clock zero — the GC `start`
+column counts from ISOLATE start, so the suite event's `time` is each
+suite's window origin. The Go port needed neither: markers and GC rows
+share one stream and one clock, so attribution is pure stream position
+(phase 1 never grew offset code, so phase 2's clock rework has nothing
+to port) and the JSON omits `clockOffsetSeconds`.
 
 Metrics (documented divergence from upstream's new/old-space split —
 gctrace prints one heap triple `heapStart->heapEnd->heapLiveAfter MB`
@@ -984,22 +1000,39 @@ per GC):
   no old-gen field, so retained-heap growth across GCs is the analog —
   positive and never freed = leak suspect).
 
-Output: the console format prints a summary line and two leaderboards
-(top N by churn, top N by old-gen growth, `--top` default 20, entries
-without GC activity excluded); `--format json` writes one JSON document
-to stdout (`testCount`, `gcCount`, `totalChurnMb`, `totalOldGrowthMb`,
-`packages[]`, `tests[]` — labels `label`/`package`/`gcs`/`churnNewMb`/
-`oldGrowthMb`, values rounded to one decimal) and keeps stdout
-JSON-only, progress on stderr.
+Output: the console format prints a summary line, the unattributed
+bucket line (`unattributed (outside test windows): N GCs, X MB`) and
+two leaderboards (top N by churn, top N by old-gen growth, `--top`
+default 20, entries without GC activity excluded); `--format json`
+writes one JSON document to stdout (`testCount`, `gcCount`,
+`totalChurnMb`, `totalOldGrowthMb`, `unattributedGcs`,
+`unattributedChurnMb`, `packages[]`, `tests[]` — labels
+`label`/`package`/`gcs`/`churnNewMb`/`oldGrowthMb`, values rounded to
+one decimal) and keeps stdout JSON-only, progress on stderr.
+
+Badges: `--badge <path>` writes a shields-style SVG badge
+(`memory churn | <N> MB`) after the report — the suite churn (every
+parsed row, bucket rows included) rounded to whole MB; green at or
+below `--badge-threshold` MB (default 500), yellow at most twice it,
+red beyond (killing tests `TestBadgeColorForThresholds` for the
+boundaries, `TestRunMemoryCommandBadge` for the file). The repo's
+`badges/memory.svg` tracks crap4go's own suite: it is written by
+`crap4go memory --badge badges/memory.svg` (manual/self-analyze) and
+committed — the CI commit-badges workflow refreshes only
+`badges/crap.svg` and `badges/coverage.svg`, never `memory.svg`.
 
 Exit codes: informational — always 0 (failing tests do not change it);
 usage errors exit 1 (bad flags or values, no `go.mod` in the project
 root, no tests executed).
 
-Dogfooding (crap4go's own suite, two consecutive runs, stable): 291
-tests (equal to the suite's result-marker count, subtests included),
-3 GCs, 9.0 MB total churn, old-gen +0.0 MB; top tests ~3.0 MB each, the
-tail slots are ties so individual ranks may swap. Upstream's measured
-insight holds: churn totals are deterministic (a function of the code)
-while GC counts are machine-dependent — churn is the future gate
-metric, never counts.
+Dogfooding (crap4go's own suite, `memory --badge badges/memory.svg`):
+294 tests (equal to the suite's result-marker count, subtests included);
+three runs measured 3 GCs / 9.0 MB, 4 GCs / 12.0 MB, 3 GCs / 9.0 MB —
+every row reclaims the same 3.0 MB, so per-test churn is stable modulo
+which window happens to catch the machine-timed GC (the leaderboards are
+ties that swap; the middle run's extra row fired under load). The
+unattributed bucket was empty in every run — with `-p 1` a light test
+binary GCs only inside its tests, which is exactly the trusted case.
+Upstream's measured insight holds: churn per row is deterministic (a
+function of the code) while GC counts are machine-dependent — churn is
+the future gate metric, never counts.
