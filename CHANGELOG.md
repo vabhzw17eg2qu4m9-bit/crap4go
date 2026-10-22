@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.15.0...v0.16.0) (2026-10-22)
+
+
+### Features
+
+* **memory:** per-test GC/alloc attribution ([#40](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/40)) ([6aa98dd](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/6aa98dd4332732ed762e7e1b8ce52930d40222ea))
+
 ## [0.15.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.14.0...v0.15.0) (2026-10-20)
 
 
