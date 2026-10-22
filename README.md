@@ -4,6 +4,7 @@
 [![version](https://img.shields.io/github/v/release/vabhzw17eg2qu4m9-bit/crap4go?label=version)](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/releases)
 ![CRAP](badges/crap.svg)
 ![coverage](badges/coverage.svg)
+![memory churn](badges/memory.svg)
 
 **crap4go** computes the **CRAP (Change Risk Anti-Patterns) metric** for Go
 code by combining each function's **cyclomatic complexity** with its
@@ -81,6 +82,7 @@ crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks acro
 crap4go similarity --check --jaccard 0.6 --containment 0.9   # flag whole-file near-duplicates; exit 2
 crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on survivors
 crap4go memory --format json       # per-test GC/alloc churn report (informational, exit 0)
+crap4go memory --badge badges/memory.svg   # refresh the README churn badge (self-analyze)
 crap4go skill                     # print the profiling skill for AI agents
 ```
 
@@ -99,36 +101,40 @@ are generic dumping-grounds (`util.go`, `helpers.go`, ...) or carry numeric
 suffixes (`batch1.go`, `configv2.go`), exiting 2 on violations; technical
 stems like `base64.go` or `sha256.go` are accepted.
 
-`memory` (ported from crap4dart 3bae178bc0, per-test GC/alloc attribution
-phase 1) runs the test suite under `go test -v -count=1 -p 1 -exec 'env
-GODEBUG=gctrace=1'` and attributes every gctrace row to a test by stream
-position: gctrace lines and `=== RUN` / `--- PASS` markers interleave in
-one ordered output stream, so a GC belongs to the innermost open test
-window (subtests nest — the shorter span wins, the upstream nested-window
-rule), a GC after `--- PASS` but before the next `=== RUN` stays out of
-both, and GCs with no open window (test-binary loading/teardown) count
-toward the package entry named by the next `ok <pkg>` / `FAIL <pkg>`
-summary — never a test's. Markers match at any indentation — subtest
-results print indented one level per depth, and a column-0-only matcher
-would leave subtest windows stuck open — and because the go tool's relay
-merges the two output streams at arbitrary byte boundaries, rows and
-markers are recovered by shape even when a tear glues a marker into a
-torn row mid-line (a row fragment is never a row: its churn is lost,
-nothing misattributed). Tracing is scoped to the test binaries via the
-go tool's `-exec` hook and GODEBUG is stripped from the command
+`memory` (ported from crap4dart 3bae178bc0 and 11551739c8, per-test
+GC/alloc attribution) runs the test suite under `go test -v -count=1 -p 1
+-exec 'env GODEBUG=gctrace=1'` and attributes every gctrace row to a test
+by stream position: gctrace lines and `=== RUN` / `--- PASS` markers
+interleave in one ordered output stream, so a GC belongs to the innermost
+open test window (subtests nest — the shorter span wins, the upstream
+nested-window rule). Only rows INSIDE test windows are trusted: GCs with
+no open window (test-binary loading, teardown after the last `--- PASS`,
+between suites) land in a separate unattributed bucket — reported, never
+polluting test or package totals. Markers match at any indentation —
+subtest results print indented one level per depth, and a column-0-only
+matcher would leave subtest windows stuck open — and because the go
+tool's relay merges the two output streams at arbitrary byte boundaries,
+rows and markers are recovered by shape even when a tear glues a marker
+into a torn row mid-line (a row fragment is never a row: its churn is
+lost, nothing misattributed). Tracing is scoped to the test binaries via
+the go tool's `-exec` hook and GODEBUG is stripped from the command
 environment, so the go tool's and the compilers' own GCs never pollute
 the stream (the role upstream's `isolate.startsWith('test_suite')`
-filter plays). Unlike upstream there is no clock-offset vote: both
+filter plays). Unlike upstream there is no clock-offset machinery: both
 markers and GC rows live in one stream, so attribution needs no clock
-math (upstream voted one global offset per suite at the 90th percentile;
-that machinery has no Go analog). Metrics: churn = the heap a GC cycle
+math (upstream voted one global offset per suite in phase 1 and replaced
+it with per-isolate clocks in phase 2; neither has a Go analog).
+Metrics: churn = the heap a GC cycle
 reclaimed, `max(0, heap-at-GC-start − live-heap-after-GC)` summed over
 the attributed rows (upstream's reclaimed new-gen); old-gen growth =
 live-heap-after-GC delta vs the previous GC, baseline reset per package
 since each package is its own test binary (upstream's oldAfter−oldBefore;
 retained growth that never frees is the leak suspect). `--format json`
 keeps stdout JSON-only (progress on stderr); `--top <N>` limits the
-leaderboards (default 20). Informational, like upstream: always exits 0
+leaderboards (default 20). `--badge <path>` (+ `--badge-threshold` MB,
+default 500) writes a shields-style `memory churn` SVG after the report:
+green at or below the threshold, yellow at most twice it, red beyond.
+Informational, like upstream: always exits 0
 — only usage errors (bad flags, no `go.mod`, no tests executed) exit 1;
 failing tests do not change the exit code. Upstream's measured insight
 carries over: churn totals are a function of the code and stable across
@@ -356,8 +362,12 @@ The hook builds `crap4go` (if the binary is missing) and runs it on your staged
 `.go` files at `--threshold 8.0`; a max CRAP above the threshold blocks the
 commit (exit code 2 from the tool).
 
-Badges under `badges/` are regenerated by CI on every push. To refresh them
-locally, build the binary, run it and the tests, then call `scripts/badge.sh`:
+Badges under `badges/` are regenerated by CI on every push — except
+`badges/memory.svg`: the commit-badges workflow refreshes only
+`crap.svg` and `coverage.svg`; `memory.svg` is written by the memory
+command itself (`crap4go memory --badge badges/memory.svg`) and
+committed manually. To refresh the other two locally, build the binary,
+run it and the tests, then call `scripts/badge.sh`:
 
 ```sh
 go build -o crap4go .

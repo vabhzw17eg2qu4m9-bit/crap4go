@@ -115,8 +115,10 @@ func TestGcChurnIsReclaimedVolume(t *testing.T) {
 
 // TestBoundaryGcDoesNotLeakIntoNextTest is the killing test for the
 // attribution boundary rule: gc 3 prints AFTER --- PASS: TestHeavy and
-// BEFORE === RUN TestLight — it must land in neither test (package
-// pending), not leak into the next window.
+// BEFORE === RUN TestLight — it must land in neither test and neither
+// package total (unattributed bucket), not leak into the next window.
+// Mutating the boundary (letting a teardown GC rejoin the last test or
+// the package entry) fails this test.
 func TestBoundaryGcDoesNotLeakIntoNextTest(t *testing.T) {
 	r := parseFixture(t, memoryFixturePkgA)
 	heavy := findTest(t, r, "TestHeavy")
@@ -128,8 +130,14 @@ func TestBoundaryGcDoesNotLeakIntoNextTest(t *testing.T) {
 		t.Errorf("TestLight gcs = %d, want 1 (boundary GC must not leak into the next test)", got)
 	}
 	pkg := r.packages[0]
-	if pkg.label != "example.com/pkgA" || len(pkg.gcs) != 4 {
-		t.Errorf("pkgA entry = %s with %d gcs, want 4 (teardown GC counts toward the package)", pkg.label, len(pkg.gcs))
+	if pkg.label != "example.com/pkgA" || len(pkg.gcs) != 3 {
+		t.Errorf("pkgA entry = %s with %d gcs, want 3 (only its tests' windows)", pkg.label, len(pkg.gcs))
+	}
+	if got := len(r.unattributed); got != 1 || r.unattributed[0].seq != 3 {
+		t.Errorf("unattributed = %+v, want exactly gc 3", r.unattributed)
+	}
+	if got := round1(r.unattributedChurnMb()); got != 1.0 {
+		t.Errorf("unattributed churn = %v, want 1 (4 start - 3 live)", got)
 	}
 }
 
@@ -150,9 +158,10 @@ func TestNestedWindowsResolveToInnermost(t *testing.T) {
 	}
 }
 
-// TestLoadingGcCountsTowardPackageOnly: a GC before the first === RUN
-// has no open window — it flushes onto the package, never a test.
-func TestLoadingGcCountsTowardPackageOnly(t *testing.T) {
+// TestLoadingGcIsUnattributed: a GC before the first === RUN has no
+// open window — it lands in the unattributed bucket, never a test and
+// never the package entry.
+func TestLoadingGcIsUnattributed(t *testing.T) {
 	stream := "gc 1 @0.001s 1%: 0.1+0.2+0.1 ms clock, 1+1/1/1+1 ms cpu, 5->1->2 MB, 6 MB goal, 0 P\n" +
 		"=== RUN   TestX\n--- PASS: TestX (0.01s)\nok  \texample.com/pkg\t0.100s\n"
 	r := parseFixture(t, stream)
@@ -160,10 +169,14 @@ func TestLoadingGcCountsTowardPackageOnly(t *testing.T) {
 		t.Fatalf("totalGcs = %d, want 1", got)
 	}
 	if e := findTest(t, r, "TestX"); len(e.gcs) != 0 {
-		t.Errorf("TestX got %d gcs, want 0 (loading GC is package-only)", len(e.gcs))
+		t.Errorf("TestX got %d gcs, want 0 (loading GC is unattributed)", len(e.gcs))
 	}
-	if len(r.packages) != 1 || len(r.packages[0].gcs) != 1 {
-		t.Errorf("package entry must carry the loading GC, got %+v", r.packages)
+	if len(r.packages) != 1 || len(r.packages[0].gcs) != 0 {
+		t.Errorf("package entry must carry no GCs, got %+v", r.packages)
+	}
+	if len(r.unattributed) != 1 || round1(r.unattributedChurnMb()) != 3.0 {
+		t.Errorf("bucket = %+v churn %v, want gc 1 / 3 MB (5 start - 2 live)",
+			r.unattributed, r.unattributedChurnMb())
 	}
 }
 
@@ -203,16 +216,19 @@ func TestSameTestNameAcrossPackages(t *testing.T) {
 }
 
 // TestChurnAndOldGrowthTotals: hand-computed sums over the fixture.
-// pkgA churn = (1-0)+(6-4)+(4-3)+(3-1) = 6; pkgA old = 0+(4-0)+(3-4)+(1-3) = +1.
-// pkgB churn = (9-5)+(7-4)+(6-3) = 10; pkgB old resets its baseline, so
-// = 0+(4-5)+(3-4) = -2. TestHeavy/sub carries gc 5 alone: churn 4, old 0.
+// Packages carry only their tests' windows now; the boundary/teardown
+// rows (pkgA gc 3, pkgB gc 7) land in the unattributed bucket.
+// pkgA churn = (1-0)+(6-4)+(3-1) = 5; pkgA old = 0+(4-0)+(1-3) = +2.
+// pkgB churn = (9-5)+(7-4) = 7; pkgB old resets its baseline, so
+// = 0+(4-5) = -1. Bucket = gc 3 + gc 7: churn (4-3)+(6-3) = 4,
+// old (3-4)+(3-4) = -2.
 func TestChurnAndOldGrowthTotals(t *testing.T) {
 	r := parseFixture(t, memoryFixtureTwoPackages)
 	if got := round1(sumChurn(r.totalGcs)); got != 16.0 {
 		t.Errorf("total churn = %v, want 16", got)
 	}
 	if got := round1(sumOldGrowth(r.totalGcs)); got != -1.0 {
-		t.Errorf("total old growth = %v, want -1 (+1 pkgA, -2 pkgB)", got)
+		t.Errorf("total old growth = %v, want -1", got)
 	}
 	sub := findTest(t, r, "TestHeavy/sub")
 	if got := round1(sub.churnMb()); got != 4.0 {
@@ -222,17 +238,26 @@ func TestChurnAndOldGrowthTotals(t *testing.T) {
 		t.Errorf("sub old growth = %v, want 0 (per-process baseline)", got)
 	}
 	pkgA, pkgB := r.packages[0], r.packages[1]
-	if got := round1(pkgA.churnMb()); got != 6.0 {
-		t.Errorf("pkgA churn = %v, want 6", got)
+	if got := round1(pkgA.churnMb()); got != 5.0 {
+		t.Errorf("pkgA churn = %v, want 5 (boundary gc 3 is unattributed)", got)
 	}
-	if got := round1(pkgB.churnMb()); got != 10.0 {
-		t.Errorf("pkgB churn = %v, want 10", got)
+	if got := round1(pkgB.churnMb()); got != 7.0 {
+		t.Errorf("pkgB churn = %v, want 7 (teardown gc 7 is unattributed)", got)
 	}
-	if got := round1(pkgA.oldGrowthMb()); got != 1.0 {
-		t.Errorf("pkgA old growth = %v, want +1", got)
+	if got := round1(pkgA.oldGrowthMb()); got != 2.0 {
+		t.Errorf("pkgA old growth = %v, want +2", got)
 	}
-	if got := round1(pkgB.oldGrowthMb()); got != -2.0 {
-		t.Errorf("pkgB old growth = %v, want -2", got)
+	if got := round1(pkgB.oldGrowthMb()); got != -1.0 {
+		t.Errorf("pkgB old growth = %v, want -1", got)
+	}
+	if len(r.unattributed) != 2 {
+		t.Fatalf("bucket = %d gcs, want 2 (gc 3 + gc 7)", len(r.unattributed))
+	}
+	if got := round1(r.unattributedChurnMb()); got != 4.0 {
+		t.Errorf("bucket churn = %v, want 4", got)
+	}
+	if got := round1(sumOldGrowth(r.unattributed)); got != -2.0 {
+		t.Errorf("bucket old growth = %v, want -2", got)
 	}
 }
 
@@ -373,10 +398,12 @@ const memoryFixtureJSONInput = `
 === RUN   TestA
 gc 1 @0.002s 2%: 0.26+0.21+0.004 ms clock, 3.7+0/0.37/0.20+0.057 ms cpu, 1->1->0 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 14 P (forced)
 --- PASS: TestA (0.09s)
+gc 2 @0.050s 2%: 0.028+0.071+0.003 ms clock, 0.44+0/0.11/0.035+0.064 ms cpu, 4->1->3 MB, 8 MB goal, 0 MB stacks, 0 MB globals, 14 P
 ok  	example.com/proj	0.634s
 `
 
-// TestRunMemoryCommandJSON: --format json keeps stdout JSON-only.
+// TestRunMemoryCommandJSON: --format json keeps stdout JSON-only and
+// reports the unattributed bucket.
 func TestRunMemoryCommandJSON(t *testing.T) {
 	overrideMemoryProfile(t, func(root string, paths []string) (memoryReport, error) {
 		return parseMemoryStream(memoryFixtureJSONInput), nil
@@ -391,13 +418,17 @@ func TestRunMemoryCommandJSON(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
 		t.Fatalf("stdout is not JSON-only: %v\n%s", err, stdout.String())
 	}
-	if doc.TestCount != 1 || doc.GCCount != 1 {
-		t.Errorf("doc = %+v, want 1 test / 1 gc", doc)
+	if doc.TestCount != 1 || doc.GCCount != 2 {
+		t.Errorf("doc = %+v, want 1 test / 2 gcs", doc)
+	}
+	if doc.UnattributedGCs != 1 || doc.UnattributedChurnMb != 1 {
+		t.Errorf("bucket = %d gcs / %v MB, want 1 / 1 (teardown gc: 4 start - 3 live)",
+			doc.UnattributedGCs, doc.UnattributedChurnMb)
 	}
 	if len(doc.Tests) != 1 || doc.Tests[0].Label != "TestA" || doc.Tests[0].GCs != 1 {
 		t.Errorf("tests = %+v", doc.Tests)
 	}
-	if len(doc.Packages) != 1 || doc.Packages[0].Label != "example.com/proj" {
+	if len(doc.Packages) != 1 || doc.Packages[0].Label != "example.com/proj" || doc.Packages[0].GCs != 1 {
 		t.Errorf("packages = %+v", doc.Packages)
 	}
 }
@@ -416,6 +447,7 @@ func TestRunMemoryCommandConsole(t *testing.T) {
 	out := stdout.String()
 	for _, want := range []string{
 		"memory: 2 tests, 4 GCs, churn 6.0 MB new-gen, old-gen +1.0 MB",
+		"unattributed (outside test windows): 1 GCs, 1.0 MB",
 		"top 20 by allocation churn (reclaimed new-gen MB):",
 		"top 20 by old-gen growth (leak suspects first):",
 		"TestHeavy",
@@ -423,6 +455,85 @@ func TestRunMemoryCommandConsole(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("console report missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// TestBadgeColorForThresholds is the killing test for the threshold
+// logic: green at or below (boundary inclusive), yellow at most twice
+// the threshold (boundary inclusive), red beyond.
+func TestBadgeColorForThresholds(t *testing.T) {
+	cases := []struct {
+		churn, threshold float64
+		want             string
+	}{
+		{0, 500, badgeGreen},
+		{500, 500, badgeGreen},
+		{500.1, 500, badgeYellow},
+		{1000, 500, badgeYellow},
+		{1000.01, 500, badgeRed},
+		{999999, 0.5, badgeRed},
+	}
+	for _, tc := range cases {
+		if got := badgeColorFor(tc.churn, tc.threshold); got != tc.want {
+			t.Errorf("badgeColorFor(%v, %v) = %s, want %s", tc.churn, tc.threshold, got, tc.want)
+		}
+	}
+}
+
+// TestRenderBadgeSVG pins the shields-style geometry and content.
+func TestRenderBadgeSVG(t *testing.T) {
+	svg := renderBadgeSVG("memory churn", "245 MB", badgeGreen)
+	// Plates: round(6.3·len)+10 → label 12 chars = 86, value 6 chars = 48.
+	for _, want := range []string{
+		`width="134" height="20" viewBox="0 0 134 20"`,
+		`aria-label="memory churn: 245 MB"`,
+		`<title>memory churn: 245 MB</title>`,
+		`<rect width="86" height="20" rx="3" fill="#555"/>`,
+		`<rect x="86" width="48" height="20" rx="3" fill="#4c1"/>`,
+		`<text x="43" y="14">memory churn</text>`,
+		`<text x="110" y="14">245 MB</text>`,
+	} {
+		if !strings.Contains(svg, want) {
+			t.Errorf("badge SVG missing %q:\n%s", want, svg)
+		}
+	}
+}
+
+// TestRunMemoryCommandBadge: --badge writes the churn SVG (green at or
+// below the threshold, yellow above it); without --badge nothing is
+// written. Fixture pkgA churns 6.0 MB in total.
+func TestRunMemoryCommandBadge(t *testing.T) {
+	overrideMemoryProfile(t, func(root string, paths []string) (memoryReport, error) {
+		return parseMemoryStream(memoryFixturePkgA), nil
+	})
+	root := memoryCommandRoot(t)
+
+	yellow := filepath.Join(root, "badges", "memory.svg")
+	var stdout, stderr bytes.Buffer
+	if code := RunMemoryCommand([]string{"--badge", yellow, "--badge-threshold", "5"}, root, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d, stderr: %s", code, stderr.String())
+	}
+	data, err := os.ReadFile(yellow)
+	if err != nil {
+		t.Fatalf("badge not written: %v", err)
+	}
+	svg := string(data)
+	if !strings.Contains(svg, "memory churn") || !strings.Contains(svg, "6 MB") {
+		t.Errorf("badge missing churn message:\n%s", svg)
+	}
+	if !strings.Contains(svg, badgeYellow) {
+		t.Errorf("churn 6 over threshold 5 must be yellow:\n%s", svg)
+	}
+	if !strings.Contains(stderr.String(), "Badge written to ") {
+		t.Errorf("stderr must note the badge path, got %q", stderr.String())
+	}
+
+	green := filepath.Join(root, "green.svg")
+	if code := RunMemoryCommand([]string{"--badge", green, "--badge-threshold", "6"}, root, &stdout, &stderr); code != 0 {
+		t.Fatalf("exit = %d (churn == threshold is green, not an error)", code)
+	}
+	if data, err = os.ReadFile(green); err != nil || !strings.Contains(string(data), badgeGreen) {
+		t.Errorf("churn 6 at threshold 6 must be green: %v\n%s", err, string(data))
 	}
 }
 
@@ -442,6 +553,7 @@ func TestRunMemoryCommandUsageErrors(t *testing.T) {
 	}{
 		{"bad format", []string{"--format", "yaml"}, emptyRoot, 1},
 		{"negative top", []string{"--top", "-1"}, emptyRoot, 1},
+		{"negative badge threshold", []string{"--badge-threshold", "-1"}, memoryCommandRoot(t), 1},
 		{"bad flag", []string{"--nope"}, emptyRoot, 1},
 		{"no go.mod", nil, emptyRoot, 1},
 		{"no tests executed", nil, memoryCommandRoot(t), 1},
@@ -507,8 +619,8 @@ ok  	example.com/pkg	0.100s
 // TestIndentedSubtestBoundary kills the indented-marker defect: subtest
 // result lines print INDENTED (4 spaces per depth, real go1.27.2 shape)
 // and AFTER the parent's unindented result. The indented line must close
-// child_one's window — the boundary GC after it must land on the
-// package, not leak into the next test.
+// child_one's window — the boundary GC after it must become unattributed,
+// not leak into the next test.
 func TestIndentedSubtestBoundary(t *testing.T) {
 	stream := `
 === RUN   TestParent
@@ -534,8 +646,11 @@ ok  	example.com/pkg	0.100s
 	if r.testCount != 3 {
 		t.Errorf("testCount = %d, want 3", r.testCount)
 	}
-	if len(r.packages) != 1 || len(r.packages[0].gcs) != 3 {
-		t.Errorf("package must carry all 3 GCs (gc 2 is boundary/pending), got %+v", r.packages)
+	if len(r.packages) != 1 || len(r.packages[0].gcs) != 2 {
+		t.Errorf("package must carry only its tests' 2 GCs, got %+v", r.packages)
+	}
+	if len(r.unattributed) != 1 || r.unattributed[0].seq != 2 {
+		t.Errorf("bucket = %+v, want exactly gc 2 (boundary after the last window)", r.unattributed)
 	}
 }
 
@@ -601,8 +716,15 @@ ok  	example.com/pkg	0.200s
 	for _, g := range r.packages[0].gcs {
 		seqs = append(seqs, g.seq)
 	}
-	if len(seqs) != 3 || seqs[0] != 4 {
-		t.Errorf("package gcs = %v, want [4 1 2]: gc 4 pending (after the last window closed) + the tests' own", seqs)
+	if len(seqs) != 2 || seqs[0] != 1 {
+		t.Errorf("package gcs = %v, want [1 2]: only the tests' own rows", seqs)
+	}
+	bucket := []int{}
+	for _, g := range r.unattributed {
+		bucket = append(bucket, g.seq)
+	}
+	if len(bucket) != 1 || bucket[0] != 4 {
+		t.Errorf("bucket = %v, want [4]: gc 4 printed after the last window closed", bucket)
 	}
 }
 

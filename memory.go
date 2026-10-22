@@ -54,14 +54,16 @@ import (
 //     (`=== CONT <name>` reopens the paused one); `=== NAME <name>`
 //     raises an open window back to the top of the stack.
 //   - A GC line lands on the innermost open window; with no open window
-//     it is pending and flushes onto the package entry named by the
-//     next `ok <pkg>` / `FAIL <pkg>` summary — loading and teardown
-//     GCs count toward package totals only, never a test's (upstream:
-//     loading GCs count toward file totals only).
+//     it is unattributed: only rows INSIDE test windows are trusted, so
+//     loading/teardown rows and rows between suites land in the report's
+//     unattributed bucket — reported, never polluting test or package
+//     totals (upstream phase 2, 11551739c8: rows outside a suite's test
+//     windows go to an unattributed bucket that never pollutes file
+//     totals).
 //   - GCs before a `?  <pkg>  [no test files]` summary are discarded:
 //     no test binary ran for that package.
 //   - A GC line after --- PASS but before the next === RUN must not
-//     leak into the next test — it is pending by construction.
+//     leak into the next test — it is unattributed by construction.
 
 // gcLineRe matches a real gctrace row, e.g.
 // "gc 12 @0.005s 5%: 0.042+0.065+0.003 ms clock, 0.59+0/0.11/0.017+0.043 ms cpu, 1->1->0 MB, 4 MB goal, 0 MB stacks, 0 MB globals, 14 P (forced)".
@@ -159,11 +161,15 @@ func sumOldGrowth(gcs []gcEvent) float64 {
 
 // memoryReport is the full attribution result of one run.
 type memoryReport struct {
-	testCount int
-	totalGcs  []gcEvent
-	packages  []*memoryEntry // in `ok` flush order
-	tests     []*memoryEntry // in run start order
+	testCount    int
+	totalGcs     []gcEvent      // every parsed row (bucket rows included)
+	unattributed []gcEvent      // rows no test window claims (loading/teardown/between suites)
+	packages     []*memoryEntry // in `ok` flush order
+	tests        []*memoryEntry // in run start order
 }
+
+// unattributedChurnMb is the reclaimed MB of the unattributed bucket.
+func (r *memoryReport) unattributedChurnMb() float64 { return sumChurn(r.unattributed) }
 
 // topChurn returns tests with GC activity sorted by churn, descending.
 func (r *memoryReport) topChurn() []*memoryEntry {
@@ -358,8 +364,10 @@ func (p *memoryStreamParser) packageSummary(s string) {
 }
 
 // attribute lands one GC on the innermost open window, or on the
-// package's pending bucket (loading/teardown). The old-gen baseline
-// resets when a package flushes — each package is its own process.
+// pending bucket (no open window: loading/teardown/between suites) that
+// flush routes to the report's unattributed bucket. The old-gen
+// baseline advances on every row either way — the chain must not reset
+// at window edges.
 func (p *memoryStreamParser) attribute(gc gcEvent) {
 	if p.hasPrev {
 		gc.oldDeltaMb = gc.heapLiveMb - p.prevLive
@@ -408,7 +416,7 @@ func (p *memoryStreamParser) raise(name string) {
 
 // close records a test result and shuts its attribution window. A GC
 // line after this point (before the next === RUN) stays out of the
-// closed test — the boundary-leak rule.
+// closed test — it has no open window and becomes unattributed.
 func (p *memoryStreamParser) close(name, result string) {
 	if e := takeByLabel(&p.open, name); e != nil {
 		e.result = result
@@ -421,18 +429,21 @@ func (p *memoryStreamParser) close(name, result string) {
 
 // discard drops pending GCs when a package summary is a `?  <pkg>
 // [no test files]` line: no test binary ran for it, so nothing it could
-// have traced belongs in the report (compile-phase noise under an
-// ambient GODEBUG would land here).
+// have traced belongs in the report — not even the unattributed bucket
+// (compile-phase noise under an ambient GODEBUG would land here).
 func (p *memoryStreamParser) discard() {
 	p.report.totalGcs = p.report.totalGcs[:len(p.report.totalGcs)-len(p.pending)]
 	p.pending = nil
 }
 
-// flush lands the package summary: pending (loading/teardown) GCs join
-// the package entry, its tests move into the report, and the per-process
-// old-gen baseline resets for the next test binary.
+// flush lands the package summary: pending GCs (no test window was open
+// — loading, teardown, inter-suite rows) join the report's unattributed
+// bucket instead of the package entry, so a package's totals carry only
+// what its tests' windows claimed; the per-process old-gen baseline
+// resets for the next test binary.
 func (p *memoryStreamParser) flush(pkg string) {
-	entry := &memoryEntry{label: pkg, gcs: p.pending}
+	p.report.unattributed = append(p.report.unattributed, p.pending...)
+	entry := &memoryEntry{label: pkg}
 	for _, t := range p.pkgTests {
 		entry.gcs = append(entry.gcs, t.gcs...)
 		t.pkg = pkg
@@ -551,19 +562,25 @@ var memoryProfile = func(root string, paths []string) (memoryReport, error) {
 
 // memoryOptions holds the parsed `memory` subcommand configuration.
 type memoryOptions struct {
-	top    int
-	format string
-	paths  []string
+	top            int
+	format         string
+	badgePath      string  // --badge: write the churn SVG here (empty = off)
+	badgeThreshold float64 // --badge-threshold MB (green at or below)
+	paths          []string
 }
 
-// parseMemoryOptions parses the memory flags: --top (default 20) and
-// --format console|json. ok=false means a usage error (exit 1), already
-// reported to stderr.
+// parseMemoryOptions parses the memory flags: --top (default 20),
+// --format console|json, --badge, --badge-threshold (default 500).
+// ok=false means a usage error (exit 1), already reported to stderr.
 func parseMemoryOptions(args []string, stderr io.Writer) (memoryOptions, int, bool) {
 	fs := flag.NewFlagSet("memory", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	top := fs.Int("top", 20, "How many entries per leaderboard to print.")
 	format := fs.String("format", "console", "Output format: console or json.")
+	badge := fs.String("badge", "", "Write a shields-style SVG badge with the suite churn "+
+		"to this path (green at or below, yellow at most twice, red over "+
+		"the --badge-threshold MB).")
+	badgeThreshold := fs.Float64("badge-threshold", 500, "Badge green/yellow boundary in MB.")
 	if err := fs.Parse(args); err != nil {
 		return memoryOptions{}, 1, false
 	}
@@ -575,7 +592,11 @@ func parseMemoryOptions(args []string, stderr io.Writer) (memoryOptions, int, bo
 		fmt.Fprintf(stderr, "memory: --top must be >= 0, got %d\n", *top)
 		return memoryOptions{}, 1, false
 	}
-	return memoryOptions{top: *top, format: *format, paths: fs.Args()}, 0, true
+	if *badgeThreshold < 0 {
+		fmt.Fprintf(stderr, "memory: --badge-threshold must be >= 0, got %v\n", *badgeThreshold)
+		return memoryOptions{}, 1, false
+	}
+	return memoryOptions{top: *top, format: *format, badgePath: *badge, badgeThreshold: *badgeThreshold, paths: fs.Args()}, 0, true
 }
 
 // isGoProject reports whether root looks like a Go module with a
@@ -616,6 +637,20 @@ func RunMemoryCommand(args []string, root string, stdout, stderr io.Writer) int 
 	} else {
 		printMemoryConsole(report, opts.top, stdout)
 	}
+	return maybeWriteBadge(opts, report, stderr)
+}
+
+// maybeWriteBadge writes the --badge SVG when requested; a write
+// failure is reported to stderr and exits 1 (usage-level error).
+func maybeWriteBadge(opts memoryOptions, report memoryReport, stderr io.Writer) int {
+	if opts.badgePath == "" {
+		return 0
+	}
+	if err := writeBadge(opts.badgePath, report, opts.badgeThreshold); err != nil {
+		fmt.Fprintf(stderr, "memory: %v\n", err)
+		return 1
+	}
+	fmt.Fprintf(stderr, "Badge written to %s\n", opts.badgePath)
 	return 0
 }
 
@@ -623,6 +658,8 @@ func RunMemoryCommand(args []string, root string, stdout, stderr io.Writer) int 
 func printMemoryConsole(report memoryReport, top int, stdout io.Writer) {
 	fmt.Fprintf(stdout, "memory: %d tests, %d GCs, churn %.1f MB new-gen, old-gen %+.1f MB\n",
 		report.testCount, len(report.totalGcs), sumChurn(report.totalGcs), sumOldGrowth(report.totalGcs))
+	fmt.Fprintf(stdout, "unattributed (outside test windows): %d GCs, %.1f MB\n",
+		len(report.unattributed), report.unattributedChurnMb())
 	fmt.Fprintln(stdout)
 	fmt.Fprintf(stdout, "top %d by allocation churn (reclaimed new-gen MB):\n", top)
 	printMemoryTable(stdout, limitBy(report.topChurn(), top))
@@ -637,6 +674,70 @@ func limitBy(entries []*memoryEntry, top int) []*memoryEntry {
 		return entries[:top]
 	}
 	return entries
+}
+
+// Badge colors from the shields.io palette (upstream badge_svg.dart):
+// green at or below the threshold, yellow at most twice it, red beyond.
+const (
+	badgeGreen  = "#4c1"
+	badgeYellow = "#dfb317"
+	badgeRed    = "#e05d44"
+)
+
+// badgeColorFor picks the badge color for churn against threshold MB:
+// at or below green; above it but at most 2× yellow; beyond that red.
+func badgeColorFor(churn, threshold float64) string {
+	if churn <= threshold {
+		return badgeGreen
+	}
+	if churn <= 2*threshold {
+		return badgeYellow
+	}
+	return badgeRed
+}
+
+// svgEscape escapes the text nodes of the badge (SVG body text only —
+// the label is the constant "memory churn", the message is digits+MB).
+func svgEscape(s string) string {
+	r := strings.NewReplacer("&", "&amp;", "<", "&lt;", ">", "&gt;", `"`, "&quot;")
+	return r.Replace(s)
+}
+
+// renderBadgeSVG renders a flat shields.io-style SVG badge: a grey
+// label plate and a colored message plate (upstream badge_svg.dart,
+// plate width = round(6.3·len)+10 for Verdana 11px).
+func renderBadgeSVG(label, message, color string) string {
+	plate := func(text string) int { return int(float64(len(text))*6.3+0.5) + 10 }
+	lw, vw := plate(label), plate(message)
+	w := lw + vw
+	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="20" viewBox="0 0 %d 20" role="img" aria-label="%s: %s">
+  <title>%s: %s</title>
+  <rect width="%d" height="20" rx="3" fill="#555"/>
+  <rect x="%d" width="%d" height="20" rx="3" fill="%s"/>
+  <rect width="%d" height="20" rx="3" fill="none"/>
+  <g fill="#fff" font-family="Verdana,DejaVu Sans,sans-serif" font-size="11" text-anchor="middle">
+    <text x="%d" y="14">%s</text>
+    <text x="%d" y="14">%s</text>
+  </g>
+</svg>
+`,
+		w, w, svgEscape(label), svgEscape(message),
+		svgEscape(label), svgEscape(message),
+		lw, lw, vw, color, w,
+		lw/2, svgEscape(label),
+		lw+vw/2, svgEscape(message))
+}
+
+// writeBadge writes the churn SVG at path: the suite churn (every
+// parsed row, bucket rows included — the whole run's volume, as
+// upstream's badge uses totalChurnMb) rounded to whole MB.
+func writeBadge(path string, report memoryReport, threshold float64) error {
+	churn := sumChurn(report.totalGcs)
+	svg := renderBadgeSVG("memory churn", fmt.Sprintf("%.0f MB", math.Round(churn)), badgeColorFor(churn, threshold))
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return err
+	}
+	return os.WriteFile(path, []byte(svg), 0o644)
 }
 
 // printMemoryTable prints one leaderboard block (upstream paddings).
@@ -665,24 +766,28 @@ type memoryJSONEntry struct {
 // has no Go analog — attribution is by stream position, not by clock
 // comparison — so it is omitted.
 type memoryJSON struct {
-	TestCount      int               `json:"testCount"`
-	GCCount        int               `json:"gcCount"`
-	TotalChurnMb   float64           `json:"totalChurnMb"`
-	TotalOldGrowth float64           `json:"totalOldGrowthMb"`
-	Packages       []memoryJSONEntry `json:"packages"`
-	Tests          []memoryJSONEntry `json:"tests"`
+	TestCount           int               `json:"testCount"`
+	GCCount             int               `json:"gcCount"`
+	TotalChurnMb        float64           `json:"totalChurnMb"`
+	TotalOldGrowth      float64           `json:"totalOldGrowthMb"`
+	UnattributedGCs     int               `json:"unattributedGcs"`
+	UnattributedChurnMb float64           `json:"unattributedChurnMb"`
+	Packages            []memoryJSONEntry `json:"packages"`
+	Tests               []memoryJSONEntry `json:"tests"`
 }
 
 // printMemoryJSON writes the machine-readable report (stdout stays
 // JSON-only; progress goes to stderr).
 func printMemoryJSON(report memoryReport, stdout io.Writer) {
 	doc := memoryJSON{
-		TestCount:      report.testCount,
-		GCCount:        len(report.totalGcs),
-		TotalChurnMb:   round1(sumChurn(report.totalGcs)),
-		TotalOldGrowth: round1(sumOldGrowth(report.totalGcs)),
-		Packages:       jsonEntries(report.packages),
-		Tests:          jsonEntries(report.tests),
+		TestCount:           report.testCount,
+		GCCount:             len(report.totalGcs),
+		TotalChurnMb:        round1(sumChurn(report.totalGcs)),
+		TotalOldGrowth:      round1(sumOldGrowth(report.totalGcs)),
+		UnattributedGCs:     len(report.unattributed),
+		UnattributedChurnMb: round1(report.unattributedChurnMb()),
+		Packages:            jsonEntries(report.packages),
+		Tests:               jsonEntries(report.tests),
 	}
 	enc := json.NewEncoder(stdout)
 	enc.SetIndent("", "  ")
