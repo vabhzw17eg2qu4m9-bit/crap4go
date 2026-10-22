@@ -906,3 +906,100 @@ printed to stderr and the process exits 1.
   subcommands with hard-coded upstream defaults; no profile
   `--tags`/`--exclude-tags` (no tag concept in `go test`) — all knobs are
   CLI flags.
+
+## 29. `memory`
+
+```
+crap4go memory [--format console|json] [--top <N>] [paths...]
+```
+
+Ported from crap4dart 3bae178bc0 (memory: per-test GC/alloc attribution
+via `--verbose_gc`, phase 1). Runs the test suite under GC tracing and
+attributes every GC event and its reclaimed memory to tests and
+packages, then reports allocation-churn and old-gen-growth hotspots.
+
+Tracing: `go test -v -count=1 -p 1 -exec 'env GODEBUG=gctrace=1'` —
+verbose for the `=== RUN` / `--- PASS` attribution markers, `-count=1`
+to bypass Go's test cache, `-p 1` so packages run sequentially, and the
+go tool's `-exec` hook scoping `GODEBUG=gctrace=1` to the test binaries
+only. GODEBUG is stripped from the command environment (an ambient
+value, or `go env -w GODEBUG`, would otherwise trace the go tool and
+every compile/link subprocess, whose GC rows would pollute the stream).
+Positional paths are forwarded to `go test` exclusively; without them
+`./...` runs.
+
+Attribution is by stream position — the Go mapping of upstream's
+isolate-switch logic: the go tool relays each test binary's combined
+output live, so gctrace rows and the verbose markers interleave in one
+ordered stream. `=== RUN <name>` opens a window; `--- PASS/FAIL/SKIP:
+<name>` and `=== PAUSE <name>` close it (`=== CONT <name>` reopens a
+paused `t.Parallel()` window; `=== NAME <name>` raises an open window to
+the top of the stack). A GC row lands on the innermost open window —
+subtest windows nest inside their parents, so the shorter span wins
+(upstream's nested-window rule). A GC row with no open window is
+pending; the next `ok <pkg>` / `FAIL <pkg>` summary flushes pending rows
+onto that package's entry — test-binary loading and teardown GCs count
+toward package totals only, never a test's (upstream: loading GCs count
+toward file totals only). A `?  <pkg>  [no test files]` summary discards
+pending rows: no test binary ran for that package. Because `-p 1` runs
+one test binary at a time, a pending bucket can never span two binaries.
+A GC row after `--- PASS` but before the next `=== RUN` must not leak
+into either test — it is pending by construction (killing test
+`TestBoundaryGcDoesNotLeakIntoNextTest`).
+
+Markers are matched at ANY indentation, and nesting comes from the
+RUN/close stack, not from indentation: subtest result lines print
+indented four spaces per depth (`    --- PASS: TestX/sub (0.00s)`,
+after the parent's unindented result — verified go1.27.2 shapes), and a
+column-0-only matcher would leave every subtest window stuck open,
+leaking all later GCs of the package into the innermost stuck subtest
+(killing test `TestIndentedSubtestBoundary`).
+
+The two output streams are merged by the go tool's relay at arbitrary
+byte boundaries, so under load a gctrace row can tear mid-row or get
+glued onto a marker (both observed in real captures). Rows and markers
+are therefore recovered by SHAPE anywhere in a physical line: a complete
+row followed by glued marker text yields both; a row torn mid-numbers is
+a fragment — its churn is honestly lost and it must never parse as a row
+or swallow a glued marker; a result word without its duration is dropped
+(Killing tests in `TestTornRowsKeepChurnAndMarkers`).
+
+There is no clock-offset vote: upstream votes one global offset per
+suite from (last GC − last test end) at the 90th percentile because the
+Dart VM's GC clock and the JSON reporter's wall clock are different
+clocks; here markers and GC rows share one stream, so attribution needs
+no clock math and the JSON omits `clockOffsetSeconds`.
+
+Metrics (documented divergence from upstream's new/old-space split —
+gctrace prints one heap triple `heapStart->heapEnd->heapLiveAfter MB`
+per GC):
+
+- churn = Σ max(0, heapStart − heapLiveAfter) over the attributed rows:
+  the volume the GC cycle reclaimed, the honest allocated-MB proxy
+  (upstream: `reclaimedNewMb = newBeforeMb − newAfterMb`).
+- old-gen growth = Σ (heapLiveAfter − previous GC's heapLiveAfter) over
+  the attributed rows, baseline 0 at each test binary's first GC — the
+  baseline resets on every package flush because each package runs as
+  its own process (upstream: `oldAfterMb − oldBeforeMb`; Go's trace has
+  no old-gen field, so retained-heap growth across GCs is the analog —
+  positive and never freed = leak suspect).
+
+Output: the console format prints a summary line and two leaderboards
+(top N by churn, top N by old-gen growth, `--top` default 20, entries
+without GC activity excluded); `--format json` writes one JSON document
+to stdout (`testCount`, `gcCount`, `totalChurnMb`, `totalOldGrowthMb`,
+`packages[]`, `tests[]` — labels `label`/`package`/`gcs`/`churnNewMb`/
+`oldGrowthMb`, values rounded to one decimal) and keeps stdout
+JSON-only, progress on stderr.
+
+Exit codes: informational — always 0 (failing tests do not change it);
+usage errors exit 1 (bad flags or values, no `go.mod` in the project
+root, no tests executed).
+
+Dogfooding (crap4go's own suite, two consecutive runs, stable): 291
+tests (equal to the suite's result-marker count, subtests included),
+3 GCs, 9.0 MB total churn, old-gen +0.0 MB; top tests ~3.0 MB each, the
+tail slots are ties so individual ranks may swap. Upstream's measured
+insight holds: churn totals are deterministic (a function of the code)
+while GC counts are machine-dependent — churn is the future gate
+metric, never counts.

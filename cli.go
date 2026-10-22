@@ -54,6 +54,10 @@ Subcommands (must be the first argument):
                     [--test-args ARGS] [--diff-base REF] [--scope-tests]
                     [paths...]
                                    Mutation-test covered sites; exit 2 on survivors
+  crap4go memory [--format console|json] [--top N] [paths...]
+                                   Run tests under GODEBUG=gctrace=1; report per-test
+                                   allocation churn and old-gen growth (informational,
+                                   always exits 0)
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -169,6 +173,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"folder-structure": RunFolderStructureCommand,
 	"mutation":         RunMutationCommand,
 	"similarity":       RunSimilarityCommand,
+	"memory":           RunMemoryCommand,
 }
 
 // runSubcommand executes a subcommand when args[0] exactly matches a known
