@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.16.0...v0.17.0) (2026-10-22)
+
+
+### Features
+
+* **memory:** unattributed bucket + --badge ([#42](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/42)) ([518a6da](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/518a6da129f18f2e09e762eb0959830a499de4b9))
+
 ## [0.16.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.15.0...v0.16.0) (2026-10-22)
 
 
