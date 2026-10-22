@@ -58,11 +58,11 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 
 ### Subcommands
 
-`profile`, `skill`, and the gate subcommands (`file-naming`, `nesting`,
-`complexity`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
-`banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`duplicates`, `similarity`) dispatch on the first argument only; anything else
-takes the analyze path above.
+`profile`, `skill`, `memory`, and the gate subcommands (`file-naming`,
+`nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
+`unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
+`folder-structure`, `duplicates`, `similarity`) dispatch on the first
+argument only; anything else takes the analyze path above.
 
 ```sh
 crap4go profile --name TestParser   # run instrumented tests, report per-method timing
@@ -80,6 +80,7 @@ crap4go folder-structure           # flag dirs with loose .go files at the modul
 crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks across modules
 crap4go similarity --check --jaccard 0.6 --containment 0.9   # flag whole-file near-duplicates; exit 2
 crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on survivors
+crap4go memory --format json       # per-test GC/alloc churn report (informational, exit 0)
 crap4go skill                     # print the profiling skill for AI agents
 ```
 
@@ -97,6 +98,42 @@ are written to `profile-reports/`. `file-naming` reports files whose stems
 are generic dumping-grounds (`util.go`, `helpers.go`, ...) or carry numeric
 suffixes (`batch1.go`, `configv2.go`), exiting 2 on violations; technical
 stems like `base64.go` or `sha256.go` are accepted.
+
+`memory` (ported from crap4dart 3bae178bc0, per-test GC/alloc attribution
+phase 1) runs the test suite under `go test -v -count=1 -p 1 -exec 'env
+GODEBUG=gctrace=1'` and attributes every gctrace row to a test by stream
+position: gctrace lines and `=== RUN` / `--- PASS` markers interleave in
+one ordered output stream, so a GC belongs to the innermost open test
+window (subtests nest — the shorter span wins, the upstream nested-window
+rule), a GC after `--- PASS` but before the next `=== RUN` stays out of
+both, and GCs with no open window (test-binary loading/teardown) count
+toward the package entry named by the next `ok <pkg>` / `FAIL <pkg>`
+summary — never a test's. Markers match at any indentation — subtest
+results print indented one level per depth, and a column-0-only matcher
+would leave subtest windows stuck open — and because the go tool's relay
+merges the two output streams at arbitrary byte boundaries, rows and
+markers are recovered by shape even when a tear glues a marker into a
+torn row mid-line (a row fragment is never a row: its churn is lost,
+nothing misattributed). Tracing is scoped to the test binaries via the
+go tool's `-exec` hook and GODEBUG is stripped from the command
+environment, so the go tool's and the compilers' own GCs never pollute
+the stream (the role upstream's `isolate.startsWith('test_suite')`
+filter plays). Unlike upstream there is no clock-offset vote: both
+markers and GC rows live in one stream, so attribution needs no clock
+math (upstream voted one global offset per suite at the 90th percentile;
+that machinery has no Go analog). Metrics: churn = the heap a GC cycle
+reclaimed, `max(0, heap-at-GC-start − live-heap-after-GC)` summed over
+the attributed rows (upstream's reclaimed new-gen); old-gen growth =
+live-heap-after-GC delta vs the previous GC, baseline reset per package
+since each package is its own test binary (upstream's oldAfter−oldBefore;
+retained growth that never frees is the leak suspect). `--format json`
+keeps stdout JSON-only (progress on stderr); `--top <N>` limits the
+leaderboards (default 20). Informational, like upstream: always exits 0
+— only usage errors (bad flags, no `go.mod`, no tests executed) exit 1;
+failing tests do not change the exit code. Upstream's measured insight
+carries over: churn totals are a function of the code and stable across
+runs, while GC counts depend on the machine — churn is the future gate
+metric, never counts.
 
 The remaining gates are ported from crap4dart 0.5.x–0.9.2 as
 subcommands (there is no gate framework: no severity/ignorable/entries/
