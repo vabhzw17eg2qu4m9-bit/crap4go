@@ -431,6 +431,14 @@ func TestRunMemoryCommandJSON(t *testing.T) {
 	if len(doc.Packages) != 1 || doc.Packages[0].Label != "example.com/proj" || doc.Packages[0].GCs != 1 {
 		t.Errorf("packages = %+v", doc.Packages)
 	}
+	// Killing test for the allocation-volume port: totalAllocatedMb is
+	// present and sourced from the churn total (the Go proxy). Dropping
+	// the field or feeding it another total (old-gen growth = 3.0 here)
+	// must fail.
+	if doc.TotalAllocatedMb != doc.TotalChurnMb || doc.TotalAllocatedMb != 2.0 {
+		t.Errorf("totalAllocatedMb = %v, want churn total 2.0 (churn = %v)",
+			doc.TotalAllocatedMb, doc.TotalChurnMb)
+	}
 }
 
 // TestRunMemoryCommandConsole: default format prints the summary line
@@ -446,10 +454,13 @@ func TestRunMemoryCommandConsole(t *testing.T) {
 	}
 	out := stdout.String()
 	for _, want := range []string{
-		"memory: 2 tests, 4 GCs, churn 6.0 MB new-gen, old-gen +1.0 MB",
+		"memory: 2 tests, 4 GCs, churn 6.0 MB new-gen, old-gen +1.0 MB, allocated 6.0 MB",
 		"unattributed (outside test windows): 1 GCs, 1.0 MB",
-		"top 20 by allocation churn (reclaimed new-gen MB):",
+		"top 20 by allocation volume (churn MB proxy on go):",
 		"top 20 by old-gen growth (leak suspects first):",
+		"GCs",
+		"alloc MB",
+		"old Δ MB",
 		"TestHeavy",
 	} {
 		if !strings.Contains(out, want) {
