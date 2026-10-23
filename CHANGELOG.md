@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.18.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.17.0...v0.18.0) (2026-10-23)
+
+
+### Features
+
+* **memory:** allocated-volume reporting ([#44](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/44)) ([8ccb647](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/8ccb64724aef8af25ddcd9cc5c2a49c12993b800))
+
 ## [0.17.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.16.0...v0.17.0) (2026-10-22)
 
 
