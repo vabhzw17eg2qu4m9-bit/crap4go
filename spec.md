@@ -916,7 +916,13 @@ crap4go memory [--format console|json] [--top <N>] [--badge <path>]
 
 Ported from crap4dart 3bae178bc0 (memory: per-test GC/alloc attribution
 via `--verbose_gc`, phase 1) and 11551739c8 (per-isolate clocks +
-unattributed bucket + `--badge`, phase 2). Runs the test suite under GC
+unattributed bucket + `--badge`, phase 2). Allocation-volume reporting
+follows b7c227d (0.17.0): reports gain `totalAllocatedMb` (JSON), an
+`allocated` headline mention and the `alloc MB` column, and the churn
+leaderboard is retitled `by allocation volume`. The engine half of
+b7c227d (Flutter/VM Service measurement) is N/A here: `go test` is
+spawned directly with the tool owning argv and env, so there is no
+flag-swallowing middleware to route around. Runs the test suite under GC
 tracing and attributes every GC event and its reclaimed memory to tests
 and packages, then reports allocation-churn and old-gen-growth hotspots.
 
@@ -992,7 +998,11 @@ per GC):
 
 - churn = Σ max(0, heapStart − heapLiveAfter) over the attributed rows:
   the volume the GC cycle reclaimed, the honest allocated-MB proxy
-  (upstream: `reclaimedNewMb = newBeforeMb − newAfterMb`).
+  (upstream: `reclaimedNewMb = newBeforeMb − newAfterMb`). gctrace
+  exposes no cumulative allocation counter out-of-process (one engine,
+  one runtime), so `totalAllocatedMb` (upstream b7c227d's exact-bytes
+  total on the Flutter engine) reports the churn value on Go; per-entry
+  JSON is unchanged.
 - old-gen growth = Σ (heapLiveAfter − previous GC's heapLiveAfter) over
   the attributed rows, baseline 0 at each test binary's first GC — the
   baseline resets on every package flush because each package runs as
@@ -1000,15 +1010,17 @@ per GC):
   no old-gen field, so retained-heap growth across GCs is the analog —
   positive and never freed = leak suspect).
 
-Output: the console format prints a summary line, the unattributed
-bucket line (`unattributed (outside test windows): N GCs, X MB`) and
-two leaderboards (top N by churn, top N by old-gen growth, `--top`
-default 20, entries without GC activity excluded); `--format json`
-writes one JSON document to stdout (`testCount`, `gcCount`,
-`totalChurnMb`, `totalOldGrowthMb`, `unattributedGcs`,
-`unattributedChurnMb`, `packages[]`, `tests[]` — labels
-`label`/`package`/`gcs`/`churnNewMb`/`oldGrowthMb`, values rounded to
-one decimal) and keeps stdout JSON-only, progress on stderr.
+Output: the console format prints a summary line (`, allocated N MB`
+appended when the churn total is above zero), the unattributed bucket
+line (`unattributed (outside test windows): N GCs, X MB`) and two
+leaderboards (top N by allocation volume — `alloc MB` column holding
+the churn proxy — top N by old-gen growth, `--top` default 20, entries
+without GC activity excluded); `--format json` writes one JSON document
+to stdout (`testCount`, `gcCount`, `totalChurnMb`, `totalAllocatedMb`,
+`totalOldGrowthMb`, `unattributedGcs`, `unattributedChurnMb`,
+`packages[]`, `tests[]` — labels `label`/`package`/`gcs`/`churnNewMb`/
+`oldGrowthMb`, values rounded to one decimal) and keeps stdout
+JSON-only, progress on stderr.
 
 Badges: `--badge <path>` writes a shields-style SVG badge
 (`memory churn | <N> MB`) after the report — the suite churn (every

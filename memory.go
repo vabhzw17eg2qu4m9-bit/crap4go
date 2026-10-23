@@ -655,13 +655,20 @@ func maybeWriteBadge(opts memoryOptions, report memoryReport, stderr io.Writer) 
 }
 
 // printMemoryConsole prints the upstream-shaped leaderboard report.
+// Allocation volume (b7c227d) has no exact Go source: gctrace exposes no
+// out-of-process allocation counter, so allocated MB is the churn proxy.
 func printMemoryConsole(report memoryReport, top int, stdout io.Writer) {
-	fmt.Fprintf(stdout, "memory: %d tests, %d GCs, churn %.1f MB new-gen, old-gen %+.1f MB\n",
-		report.testCount, len(report.totalGcs), sumChurn(report.totalGcs), sumOldGrowth(report.totalGcs))
+	churn := sumChurn(report.totalGcs)
+	allocated := ""
+	if churn > 0 {
+		allocated = fmt.Sprintf(", allocated %.1f MB", churn)
+	}
+	fmt.Fprintf(stdout, "memory: %d tests, %d GCs, churn %.1f MB new-gen, old-gen %+.1f MB%s\n",
+		report.testCount, len(report.totalGcs), churn, sumOldGrowth(report.totalGcs), allocated)
 	fmt.Fprintf(stdout, "unattributed (outside test windows): %d GCs, %.1f MB\n",
 		len(report.unattributed), report.unattributedChurnMb())
 	fmt.Fprintln(stdout)
-	fmt.Fprintf(stdout, "top %d by allocation churn (reclaimed new-gen MB):\n", top)
+	fmt.Fprintf(stdout, "top %d by allocation volume (churn MB proxy on go):\n", top)
 	printMemoryTable(stdout, limitBy(report.topChurn(), top))
 	fmt.Fprintln(stdout)
 	fmt.Fprintf(stdout, "top %d by old-gen growth (leak suspects first):\n", top)
@@ -746,7 +753,7 @@ func printMemoryTable(stdout io.Writer, entries []*memoryEntry) {
 		fmt.Fprintln(stdout, "  (no GC activity)")
 		return
 	}
-	fmt.Fprintf(stdout, "  %5s  %9s  %9s  test\n", "GCs", "churn MB", "old Δ MB")
+	fmt.Fprintf(stdout, "  %5s  %9s  %9s  test\n", "GCs", "alloc MB", "old Δ MB")
 	for _, e := range entries {
 		fmt.Fprintf(stdout, "%7d  %9.1f  %9.1f  %s\n", len(e.gcs), e.churnMb(), e.oldGrowthMb(), e.label)
 	}
@@ -764,11 +771,14 @@ type memoryJSONEntry struct {
 
 // memoryJSON is the JSON report document. Upstream's clockOffsetSeconds
 // has no Go analog — attribution is by stream position, not by clock
-// comparison — so it is omitted.
+// comparison — so it is omitted. totalAllocatedMb mirrors upstream
+// b7c227d's allocation-volume total; on Go it is the churn proxy (no
+// exact allocation counter is exposed out-of-process by the runtime).
 type memoryJSON struct {
 	TestCount           int               `json:"testCount"`
 	GCCount             int               `json:"gcCount"`
 	TotalChurnMb        float64           `json:"totalChurnMb"`
+	TotalAllocatedMb    float64           `json:"totalAllocatedMb"`
 	TotalOldGrowth      float64           `json:"totalOldGrowthMb"`
 	UnattributedGCs     int               `json:"unattributedGcs"`
 	UnattributedChurnMb float64           `json:"unattributedChurnMb"`
@@ -779,10 +789,12 @@ type memoryJSON struct {
 // printMemoryJSON writes the machine-readable report (stdout stays
 // JSON-only; progress goes to stderr).
 func printMemoryJSON(report memoryReport, stdout io.Writer) {
+	churn := round1(sumChurn(report.totalGcs))
 	doc := memoryJSON{
 		TestCount:           report.testCount,
 		GCCount:             len(report.totalGcs),
-		TotalChurnMb:        round1(sumChurn(report.totalGcs)),
+		TotalChurnMb:        churn,
+		TotalAllocatedMb:    churn,
 		TotalOldGrowth:      round1(sumOldGrowth(report.totalGcs)),
 		UnattributedGCs:     len(report.unattributed),
 		UnattributedChurnMb: round1(report.unattributedChurnMb()),
