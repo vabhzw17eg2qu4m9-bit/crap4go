@@ -62,7 +62,7 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 `profile`, `skill`, `memory`, and the gate subcommands (`file-naming`,
 `nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
 `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
-`folder-structure`, `duplicates`, `similarity`) dispatch on the first
+`folder-structure`, `anon-struct-signatures`, `duplicates`, `similarity`) dispatch on the first
 argument only; anything else takes the analyze path above.
 
 ```sh
@@ -78,6 +78,7 @@ crap4go banned-imports --from 'ui/**' --forbid '**/db/**' --message 'UI must not
 crap4go magic-constants           # flag hex colors outside consts and repeated literals
 crap4go test-assertions           # flag tests with no fail-capable calls (t.Error/Fatal/..., panic)
 crap4go folder-structure           # flag dirs with loose .go files at the module root
+crap4go anon-struct-signatures     # flag anonymous struct types in function signatures
 crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks across modules
 crap4go similarity --check --jaccard 0.6 --containment 0.9   # flag whole-file near-duplicates; exit 2
 crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on survivors
@@ -183,7 +184,25 @@ call (`Error`/`Errorf`/`Fatal`/`Fatalf`/`Fail`/`FailNow`, including via
 subtest closures) and no `panic()` — a test without assertions verifies
 nothing. `folder-structure` (from 0.9) flags directories holding more
 than 0 loose `.go` files directly (default: the module root) — group
-them into feature packages. `duplicates` (from 0.2.0, plus dc64e9c's
+them into feature packages.
+
+`anon-struct-signatures` (from crap4dart 4d844a4's record gates, collapsed
+into one Go gate) flags anonymous struct types in function signatures —
+declarations, methods and function literals, parameters and results,
+nested inside slice/map/chan/pointer types and generic type arguments
+included. Every inline `struct{...}` in a signature forces consumers to
+diff the shape field-by-field and lets "similar but not identical" shapes
+drift apart silently; declare it as a named type and reference the name.
+`--max-fields N` (default 5) calls a flagged shape oversized in its
+message when the field count exceeds it (upstream's record_size cap). The
+blessed form is a named type: a struct referenced by name is never
+flagged, and unnamed multiple results — Go's core idiom — are never
+flagged either. Dart's `.$N` positional field access has no Go
+counterpart (nothing to port); anonymous struct values in bodies stay
+legal; a named function type blesses nothing — an anonymous struct inside
+`type Handler func() struct{ OK bool }` is still flagged.
+
+`duplicates` (from 0.2.0, plus dc64e9c's
 per-gate `sources`) tokenizes every scanned file with `go/scanner`
 dropping comments and auto-inserted semicolons, finds token windows of
 50+ tokens (`--min-tokens`) spanning 5+ lines (`--min-lines`) that appear

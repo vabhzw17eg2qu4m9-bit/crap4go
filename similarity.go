@@ -301,7 +301,7 @@ func similarityGoLiteralValue(tok token.Token) (value string, keep bool) {
 // The content is normalized first (markdown loses its fenced code
 // blocks, code loses comments/imports and keeps literal placeholders) —
 // raw bytes would make unrelated files look alike.
-func shinglesForPath(content, path string) map[string]struct{} {
+func shinglesForPath(content, path string) shingleSet {
 	profile := similarityProfileFor(path)
 	var tokens []string
 	if profile == profileCode && strings.EqualFold(filepath.Ext(path), ".go") {
@@ -309,7 +309,7 @@ func shinglesForPath(content, path string) map[string]struct{} {
 	} else {
 		tokens = tokensFor(similarityNormalize(content, profile), profile)
 	}
-	set := make(map[string]struct{})
+	set := make(shingleSet)
 	if len(tokens) < shingleSize {
 		return set
 	}
@@ -320,7 +320,7 @@ func shinglesForPath(content, path string) map[string]struct{} {
 }
 
 // intersectionCount is the number of shingles present in both sets.
-func intersectionCount(a, b map[string]struct{}) int {
+func intersectionCount(a, b shingleSet) int {
 	small, large := a, b
 	if len(b) < len(a) {
 		small, large = b, a
@@ -336,7 +336,7 @@ func intersectionCount(a, b map[string]struct{}) int {
 
 // jaccard is the Jaccard similarity of two shingle sets: intersection
 // over union. 1.0 for identical sets, 0.0 for disjoint ones.
-func jaccard(a, b map[string]struct{}) float64 {
+func jaccard(a, b shingleSet) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
 	}
@@ -348,7 +348,7 @@ func jaccard(a, b map[string]struct{}) float64 {
 // how much of the smaller file's content the larger one reproduces.
 // Catches the "file A is largely a copy of big file B" case where
 // Jaccard stays low.
-func containment(a, b map[string]struct{}) float64 {
+func containment(a, b shingleSet) float64 {
 	if len(a) == 0 || len(b) == 0 {
 		return 0
 	}
@@ -356,11 +356,17 @@ func containment(a, b map[string]struct{}) float64 {
 	return float64(shared) / float64(min(len(a), len(b)))
 }
 
+// shingleSet is a set of shingle strings: the similarity scan's shared
+// shape, promoted to a named type so signatures reference a name instead
+// of the map[string]struct{} set idiom (an anonymous struct type in a
+// signature — see the anon-struct-signatures gate).
+type shingleSet map[string]struct{}
+
 // similarityFile is one analyzed file: its project-relative path and
 // shingle set.
 type similarityFile struct {
 	path     string
-	shingles map[string]struct{}
+	shingles shingleSet
 }
 
 // SimilarityPair is a pair of files whose similarity crosses at least
