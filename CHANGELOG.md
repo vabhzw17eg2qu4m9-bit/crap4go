@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.19.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.18.0...v0.19.0) (2026-10-23)
+
+
+### Features
+
+* **gate:** anon-struct-signatures gate (adapted from upstream 4d844a4 record gates) ([#46](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/46)) ([5624b92](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/5624b92a5796841daac7b16502cb766665a2b7a5))
+
 ## [0.18.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.17.0...v0.18.0) (2026-10-23)
 
 
