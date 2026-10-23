@@ -48,6 +48,9 @@ Subcommands (must be the first argument):
   crap4go magic-constants [paths...] Flag magic literals (hex colors, repeats); exit 2
   crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
   crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
+  crap4go anon-struct-signatures [--max-fields N] [paths...]
+                                   Flag anonymous struct types in function
+                                   signatures; exit 2
   crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
                     [--timeout-seconds N] [--max-mutants N]
                     [--operators LIST] [--exclude GLOB]... [--cache]
@@ -159,21 +162,22 @@ func runWithRoot(args []string, root string, stdout, stderr io.Writer) int {
 // subcommands maps gate subcommand names to their runners; all share the
 // (args, root, stdout, stderr) signature and return the exit code.
 var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
-	"file-naming":      RunFileNamingCommand,
-	"nesting":          RunNestingCommand,
-	"complexity":       RunComplexityCommand,
-	"class-size":       RunClassSizeCommand,
-	"weight-of-class":  RunWeightOfClassCommand,
-	"unused-code":      RunUnusedCodeCommand,
-	"unused-files":     RunUnusedFilesCommand,
-	"banned-imports":   RunBannedImportsCommand,
-	"magic-constants":  RunMagicConstantsCommand,
-	"duplicates":       RunDuplicatesCommand,
-	"test-assertions":  RunTestAssertionsCommand,
-	"folder-structure": RunFolderStructureCommand,
-	"mutation":         RunMutationCommand,
-	"similarity":       RunSimilarityCommand,
-	"memory":           RunMemoryCommand,
+	"file-naming":            RunFileNamingCommand,
+	"nesting":                RunNestingCommand,
+	"complexity":             RunComplexityCommand,
+	"class-size":             RunClassSizeCommand,
+	"weight-of-class":        RunWeightOfClassCommand,
+	"unused-code":            RunUnusedCodeCommand,
+	"unused-files":           RunUnusedFilesCommand,
+	"banned-imports":         RunBannedImportsCommand,
+	"magic-constants":        RunMagicConstantsCommand,
+	"duplicates":             RunDuplicatesCommand,
+	"test-assertions":        RunTestAssertionsCommand,
+	"folder-structure":       RunFolderStructureCommand,
+	"mutation":               RunMutationCommand,
+	"similarity":             RunSimilarityCommand,
+	"memory":                 RunMemoryCommand,
+	"anon-struct-signatures": RunAnonStructSignaturesCommand,
 }
 
 // runSubcommand executes a subcommand when args[0] exactly matches a known

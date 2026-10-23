@@ -42,6 +42,9 @@ crap4go banned-imports [--from GLOB --forbid GLOB --message MSG]... [paths...]
                                  Flag banned imports per from/forbid rule; exit 2
 crap4go magic-constants [paths...] Flag magic literals; exit 2 on violations
 crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
+crap4go anon-struct-signatures [--max-fields N] [paths...]
+                                 Flag anonymous struct types in function
+                                 signatures; exit 2
 crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
                    [--report percentage|clones] [--exclude GLOB]...
                    [--source PATH]... [--ignore-locals] [--ignore-literals]
@@ -67,7 +70,7 @@ combined). Unknown flags are usage errors.
 **Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`duplicates`, `mutation`, `similarity`)
+`anon-struct-signatures`, `duplicates`, `mutation`, `similarity`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -886,7 +889,8 @@ of `0` or less is a usage error.
 |      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
 |      | `banned-imports`, `magic-constants`, `test-assertions`,                  |
-|      | `duplicates`, `folder-structure`, `mutation`, `similarity --check`).     |
+|      | `anon-struct-signatures`, `duplicates`, `folder-structure`, `mutation`,  |
+|      | `similarity --check`).                                                   |
 |      | (Also reported on stderr.)                                              |
 
 ## 27. `--run-tests`
@@ -1048,3 +1052,72 @@ binary GCs only inside its tests, which is exactly the trusted case.
 Upstream's measured insight holds: churn per row is deterministic (a
 function of the code) while GC counts are machine-dependent — churn is
 the future gate metric, never counts.
+
+## 30. `anon-struct-signatures`
+
+```
+crap4go anon-struct-signatures [--max-fields N] [paths...]
+```
+
+Go adaptation of crap4dart 4d844a4's record gates (wave 6: named fields,
+no inline record types, arity cap), collapsed into one gate per the port's
+one-command convention. Dart records do not exist in Go; the honest
+host-language analog of an anonymous record shape in a signature is the
+anonymous struct type, and upstream's inline-record and unnamed-fields
+kinds collapse into it: every `struct{...}` written inside a function
+signature is inline (no named declaration to point at) and its fields are
+shape-diffed positionally by consumers. Upstream's third kind — positional
+field access (`.$1`, `.$2`) — is N/A: Go has no positional field access
+(t[0] is universal indexing and would fire on every slice), so nothing is
+ported for it.
+
+**Flagged:** an anonymous struct type (`*ast.StructType`) reachable from a
+signature's parameter or result types — `FuncDecl.Type`, `FuncLit.Type`,
+and function-typed `TypeSpec` declarations (a named function type blesses
+nothing, mirroring upstream's "function-type typedef blesses nothing": the
+anonymous shape inside `type Handler func() struct{ OK bool }` is still
+flagged). Types nested inside slice, map, chan, pointer and generic type
+arguments are included (one walk per type expression). Only the outermost
+anonymous struct of a nested group is reported — an inner one is fixed by
+the same named-type extraction.
+
+**Never flagged (blessed forms and N/A kinds):**
+
+- Named struct types referenced by name (`type Point struct{...}` then
+  `func dist(a, b Point) float64`) — the named declaration form upstream
+  blesses; the gate sees an identifier, not a shape.
+- Unnamed multiple results (`func div(a, b int) (int, int)`) — Go's core
+  idiom; positional shapes in a result list are plain named types, not
+  anonymous structs, so the unnamed-fields kind has nothing to attach to.
+- Anonymous struct values in bodies (`v := struct{ X int }{1}`) — record
+  values stay legal upstream too; only signature shapes are scanned.
+- Interface method signatures are not scanned (no scanned counterpart
+  upstream); receivers are not scanned (the receiver type names the
+  method's owner, it is not part of the call signature).
+
+`--max-fields N` (default 5) folds upstream's `record_size` cap into the
+same finding: a flagged anonymous struct with more than N fields says so
+in its message. Values below 1 are a usage error (exit 1).
+
+Output: one line per finding —
+`<relative path>:<line>: anonymous struct type in signature: declare it as
+a named type and reference it by name`, or `anonymous struct type with N
+fields (max M) in signature: ...` for oversized shapes — plus a summary
+(`N signatures checked, no anonymous struct types in signatures` on a
+clean run, `M anonymous struct types in K signatures` otherwise). Exit
+code 2 iff there are violations, 0 on a clean or empty selection, 1 on
+usage errors (bad flags, `--max-fields < 1`).
+
+Killing tests: `TestRun_AnonStructFlagged` (nested-composite walk — drop
+the descent into slice/map/generic type arguments and the nested case
+passes), `TestRun_MaxFieldsBoundary` (`--max-fields 2`: a two-field shape
+must carry the plain message, a three-field shape the oversized one — an
+`>=` off-by-one flips both). The blessed forms are pinned by
+`TestRun_NamedTypesBlessed` and `TestRun_UnnamedMultipleResultsLegal`
+(even at `--max-fields 1`); `TestRun_FuncTypeAliasBlessesNothing` and
+`TestRun_AnonStructValuesLegal` pin the alias and body-value rules.
+
+Dogfooding: on crap4go's own source the gate flagged 4 shapes — the
+`map[string]struct{}` set idiom in similarity.go signatures — promoted to
+the named `shingleSet` type in the same commit; the gate now passes with
+443 signatures checked.
