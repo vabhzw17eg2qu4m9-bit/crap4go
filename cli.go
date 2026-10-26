@@ -47,7 +47,11 @@ Subcommands (must be the first argument):
                                    --check: then exit 2 on violations
   crap4go magic-constants [paths...] Flag magic literals (hex colors, repeats); exit 2
   crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
-  crap4go folder-structure [dirs...] Flag dirs with loose .go files; exit 2
+  crap4go folder-structure [--max-loose-files N] [--cap PATTERN=N]...
+                    [--exclude GLOB]... [dirs...]
+                                   Flag dirs with loose .go files; --cap
+                                   gives a pattern its own cap (first wins);
+                                   exit 2 on violations
   crap4go anon-struct-signatures [--max-fields N] [paths...]
                                    Flag anonymous struct types in function
                                    signatures; exit 2

@@ -554,18 +554,38 @@ assertions verifies nothing`) plus a summary. Exit code 2 iff violations.
 ## 20. `folder-structure`
 
 ```
-crap4go folder-structure [dirs...]
+crap4go folder-structure [--max-loose-files N] [--cap PATTERN=N]...
+                   [--exclude GLOB]... [dirs...]
 ```
 
-Go adaptation of crap4dart 0.9's `folder_structure` gate (max 0 loose
-files): flags directories containing more than 0 non-test `.go` files
-directly (non-recursive) — a flat-file sprawl that should be organized
-into feature packages. Default directory: the module root (`.`) — the
-port's default source root; positional args select other directories
-(resolved against the root; a non-directory arg is a usage error).
-Output: one line per violation
+Go adaptation of crap4dart 753c3580's `folder_structure` gate: flags
+directories containing more than their cap of logical non-test `.go`
+units directly (non-recursive) — a flat-file sprawl that should be
+organized into feature packages. Classic form: positional dirs (default:
+the module root `.`, the port's default source root) share one cap,
+`--max-loose-files 0` by default; a non-directory arg is a usage error.
+Counting rules: only a directory's OWN files count — subdirectories are
+the organized form and never reach the parent's budget. Generated
+siblings of one source file collapse into a single logical unit:
+`foo.go`, `foo.pb.go`, `foo.pb.gw.go` and `foo_string.go` share the stem
+`foo` (protobuf and stringer output), and wholly generated
+`zz_generated*.go` files share one unit per directory — the port's
+host-generic generated-sibling set. `--exclude GLOB` (repeatable) drops
+matching files from the count. Directory entries — positional dirs and
+--cap patterns alike — are literal paths or glob patterns
+(`internal/*`, `packages/**`) expanding to every matching directory;
+hidden (dot-prefixed), `vendor` and `build` directories are never
+enumerated, and a pattern matching nothing selects nothing. Per-pattern
+caps: `--cap PATTERN=N` (repeatable) checks every directory matching
+PATTERN against N — the CLI form of crap4dart's `config` map; a
+directory matched by several patterns uses the FIRST pattern's cap, and
+with --cap present the positional dirs and --max-loose-files are not
+consulted (upstream precedence rule). Output: one line per violation
 (`<dir>: N loose .go files directly in <dir> — group them into feature
-packages (max 0)`) plus a summary. Exit code 2 iff violations.
+packages (max <cap>)`) plus a summary. Exit code 2 iff violations.
+Dogfooding: the flat single-package root holds 34 logical units (no
+generated files, so collapse is a no-op here), capped at 34 — any new
+root-level dump flags at once.
 
 ## 21. `duplicates`
 

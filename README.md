@@ -78,6 +78,7 @@ crap4go banned-imports --from 'ui/**' --forbid '**/db/**' --message 'UI must not
 crap4go magic-constants           # flag hex colors outside consts and repeated literals
 crap4go test-assertions           # flag tests with no fail-capable calls (t.Error/Fatal/..., panic)
 crap4go folder-structure           # flag dirs with loose .go files at the module root
+crap4go folder-structure --cap 'internal/*=3'   # per-pattern caps over glob-selected dirs
 crap4go anon-struct-signatures     # flag anonymous struct types in function signatures
 crap4go scattered-constants        # flag literals repeated across 3+ files or duplicating a named const
 crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks across modules
@@ -183,9 +184,14 @@ keys, index operands, switch case labels — never count).
 files that cannot fail the test: no fail-capable `*testing.T` method
 call (`Error`/`Errorf`/`Fatal`/`Fatalf`/`Fail`/`FailNow`, including via
 subtest closures) and no `panic()` — a test without assertions verifies
-nothing. `folder-structure` (from 0.9) flags directories holding more
-than 0 loose `.go` files directly (default: the module root) — group
-them into feature packages.
+nothing. `folder-structure` (from 0.9, upgraded from crap4dart
+753c3580) flags directories holding more than their cap of loose `.go`
+units directly (default: the module root, `--max-loose-files 0`) —
+group them into feature packages. Generated siblings of one source file
+(`foo.go` + `foo.pb.go` + `foo_string.go`, `zz_generated*.go`) count
+once; dirs accept globs (`internal/*`, hidden/`vendor`/`build` trees
+skipped); `--cap 'internal/*=3'` gives a pattern its own cap (first
+pattern wins); `--exclude GLOB` drops files.
 
 `anon-struct-signatures` (from crap4dart 4d844a4's record gates, collapsed
 into one Go gate) flags anonymous struct types in function signatures —
