@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.19.0...v0.20.0) (2026-10-26)
+
+
+### Features
+
+* **gate:** scattered-constants gate ([#48](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/48)) ([06363ea](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/06363ea6737ca1602e6956e780746b8b4c3c5258))
+
 ## [0.19.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.18.0...v0.19.0) (2026-10-23)
 
 
