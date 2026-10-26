@@ -29,12 +29,12 @@ func RunNestingCommand(args []string, root string, stdout, stderr io.Writer) int
 		return 1
 	}
 	if len(files) == 0 {
-		fmt.Fprintln(stdout, "No Go files to check.")
+		fmt.Fprintln(stdout, noGoFilesNotice)
 		return 0
 	}
 	violations, checked := CheckNesting(files, root)
 	for _, v := range violations {
-		fmt.Fprintf(stdout, "%s:%d: %s\n", v.Path, v.Line, v.Message)
+		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}
 	if len(violations) > 0 {
 		fmt.Fprintf(stdout, "%d/%d functions nested deeper than %d\n", len(violations), checked, maxNesting)

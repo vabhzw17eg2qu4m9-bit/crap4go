@@ -41,7 +41,7 @@ func RunFolderStructureCommand(args []string, root string, stdout, stderr io.Wri
 		}
 	}
 	for _, v := range violations {
-		fmt.Fprintf(stdout, "%s: %s\n", v.Dir, v.Message)
+		fmt.Fprintf(stdout, violationTextFormat, v.Dir, v.Message)
 	}
 	if len(violations) > 0 {
 		fmt.Fprintf(stdout, "%d directory(ies) with loose-file sprawl\n", len(violations))
@@ -89,7 +89,7 @@ func countLooseFiles(dir string) int {
 			continue
 		}
 		name := e.Name()
-		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, "_test.go") {
+		if strings.HasSuffix(name, ".go") && !strings.HasSuffix(name, testFileSuffix) {
 			count++
 		}
 	}

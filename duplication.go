@@ -130,7 +130,7 @@ func RunDuplicatesCommand(args []string, root string, stdout, stderr io.Writer) 
 		return 0
 	}
 	for _, v := range result.violations {
-		fmt.Fprintf(stdout, "%s:%d: %s\n", v.Path, v.Line, v.Message)
+		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}
 	fmt.Fprintln(stdout, result.summary)
 	if len(result.violations) > 0 {
@@ -150,7 +150,7 @@ func parseDuplicatesFlags(args []string, stderr io.Writer) (dupOptions, int, boo
 		minTokens: defaultDupMinTokens,
 		minLines:  defaultDupMinLines,
 	}
-	fs.Float64Var(&opts.threshold, "threshold", defaultDupThreshold, "flag files over this % of duplicated lines")
+	fs.Float64Var(&opts.threshold, thresholdFlagName, defaultDupThreshold, "flag files over this % of duplicated lines")
 	fs.IntVar(&opts.minTokens, "min-tokens", defaultDupMinTokens, "minimum tokens in a duplicated block")
 	fs.IntVar(&opts.minLines, "min-lines", defaultDupMinLines, "minimum source lines in a duplicated block")
 	report := fs.String("report", "percentage", "what violations report for: percentage or clones (PMD CPD style)")
@@ -161,7 +161,7 @@ func parseDuplicatesFlags(args []string, stderr io.Writer) (dupOptions, int, boo
 	fs.BoolVar(&opts.skipDuplicateFiles, "skip-duplicate-files", false, "skip files whose token stream equals an earlier file's")
 	excludes := &stringSlice{}
 	sources := &stringSlice{}
-	fs.Var(excludes, "exclude", "glob of project-relative paths to skip (repeatable)")
+	fs.Var(excludes, excludeFlagName, excludeFlagUsage)
 	fs.Var(sources, "source", "extra file or directory unioned into the scan (repeatable)")
 	if err := fs.Parse(args); err != nil {
 		return dupOptions{}, 1, false

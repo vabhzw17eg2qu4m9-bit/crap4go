@@ -146,12 +146,12 @@ func diffIntersects(lines map[int]bool, start, end int) bool {
 func mutationScopedTestArgs(root, file string) []string {
 	rel := relPath(root, file)
 	dir := filepath.Dir(rel)
-	candidate := filepath.Join(dir, strings.TrimSuffix(filepath.Base(rel), ".go")+"_test.go")
+	candidate := filepath.Join(dir, strings.TrimSuffix(filepath.Base(rel), ".go")+testFileSuffix)
 	if _, err := os.Stat(filepath.Join(root, candidate)); err != nil {
 		return nil
 	}
 	if dir == "." {
-		return []string{"test", "."}
+		return []string{goTestSubcommand, "."}
 	}
-	return []string{"test", "./" + filepath.ToSlash(dir)}
+	return []string{goTestSubcommand, "./" + filepath.ToSlash(dir)}
 }

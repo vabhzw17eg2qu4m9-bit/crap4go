@@ -90,7 +90,7 @@ func reportSimilarityGate(report SimilarityReport, opts similarityOptions, stdou
 				break
 			}
 		}
-		fmt.Fprintf(stdout, "%s: %s\n", path, similarityViolationMessage(path, cluster, report))
+		fmt.Fprintf(stdout, violationTextFormat, path, similarityViolationMessage(path, cluster, report))
 	}
 	fmt.Fprintf(stdout, "%d files in %d similar-file clusters (%d scanned)\n",
 		len(report.ClusteredPaths()), len(report.Clusters), report.Scanned)
@@ -245,7 +245,7 @@ func parseSimilarityFlags(args []string, stderr io.Writer) (similarityCommandOpt
 	includes := &stringSlice{}
 	excludes := &stringSlice{}
 	fs.Var(includes, "include", "glob of files to analyze (repeatable)")
-	fs.Var(excludes, "exclude", "glob of project-relative paths to skip (repeatable)")
+	fs.Var(excludes, excludeFlagName, excludeFlagUsage)
 	format := fs.String("format", defaultSimFormat, `output format: "console" or "json"`)
 	check := fs.Bool("check", false, "gate mode: one violation per clustered file, exit 2 on violations")
 	if err := fs.Parse(args); err != nil {

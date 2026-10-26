@@ -506,11 +506,11 @@ const tracedExecWrapper = "env GODEBUG=gctrace=1"
 // bypass, sequential packages, tracing scoped to the test binaries.
 // Explicit paths are exclusive; `./...` is the default.
 func memoryTestArgs(paths []string) []string {
-	args := []string{"test", "-v", "-count=1", "-p", "1", "-exec", tracedExecWrapper}
+	args := []string{goTestSubcommand, "-v", "-count=1", "-p", "1", "-exec", tracedExecWrapper}
 	if len(paths) > 0 {
 		return append(args, paths...)
 	}
-	return append(args, "./...")
+	return append(args, goTestAllPackages)
 }
 
 // tracedEnv strips GODEBUG from the environment (an ambient value or a
@@ -576,7 +576,7 @@ func parseMemoryOptions(args []string, stderr io.Writer) (memoryOptions, int, bo
 	fs := flag.NewFlagSet("memory", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	top := fs.Int("top", 20, "How many entries per leaderboard to print.")
-	format := fs.String("format", "console", "Output format: console or json.")
+	format := fs.String("format", defaultSimFormat, "Output format: console or json.")
 	badge := fs.String("badge", "", "Write a shields-style SVG badge with the suite churn "+
 		"to this path (green at or below, yellow at most twice, red over "+
 		"the --badge-threshold MB).")
@@ -584,7 +584,7 @@ func parseMemoryOptions(args []string, stderr io.Writer) (memoryOptions, int, bo
 	if err := fs.Parse(args); err != nil {
 		return memoryOptions{}, 1, false
 	}
-	if *format != "console" && *format != "json" {
+	if *format != defaultSimFormat && *format != "json" {
 		fmt.Fprintf(stderr, "memory: unknown --format %q (want console or json)\n", *format)
 		return memoryOptions{}, 1, false
 	}
@@ -744,7 +744,7 @@ func writeBadge(path string, report memoryReport, threshold float64) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(svg), 0o644)
+	return os.WriteFile(path, []byte(svg), writableFilePerm)
 }
 
 // printMemoryTable prints one leaderboard block (upstream paddings).

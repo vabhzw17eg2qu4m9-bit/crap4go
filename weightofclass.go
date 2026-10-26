@@ -33,12 +33,12 @@ func RunWeightOfClassCommand(args []string, root string, stdout, stderr io.Write
 		return 1
 	}
 	if len(files) == 0 {
-		fmt.Fprintln(stdout, "No Go files to check.")
+		fmt.Fprintln(stdout, noGoFilesNotice)
 		return 0
 	}
 	violations, checked := CheckWeightOfClass(files, root)
 	for _, v := range violations {
-		fmt.Fprintf(stdout, "%s:%d: %s\n", v.Path, v.Line, v.Message)
+		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}
 	if len(violations) > 0 {
 		fmt.Fprintf(stdout, "%d/%d types over weight %.2f\n", len(violations), checked, maxWeight)

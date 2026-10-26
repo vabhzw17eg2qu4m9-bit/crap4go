@@ -196,7 +196,7 @@ func (c *mutationCache) save(path string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, append(data, '\n'), 0o644)
+	return os.WriteFile(path, append(data, '\n'), writableFilePerm)
 }
 
 // loadMutationCache loads the cache at path under meta. A missing, corrupt,

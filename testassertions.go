@@ -47,12 +47,12 @@ func RunTestAssertionsCommand(args []string, root string, stdout, stderr io.Writ
 		return 1
 	}
 	if len(files) == 0 {
-		fmt.Fprintln(stdout, "No Go files to check.")
+		fmt.Fprintln(stdout, noGoFilesNotice)
 		return 0
 	}
 	violations, checked := CheckTestAssertions(files, root)
 	for _, v := range violations {
-		fmt.Fprintf(stdout, "%s:%d: %s\n", v.Path, v.Line, v.Message)
+		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}
 	if len(violations) > 0 {
 		fmt.Fprintf(stdout, "%d/%d tests without assertions\n", len(violations), checked)
@@ -103,7 +103,7 @@ func expandTestPath(arg, root string) ([]string, error) {
 	if info.IsDir() {
 		return walkTestFiles(path)
 	}
-	if strings.HasSuffix(path, "_test.go") {
+	if strings.HasSuffix(path, testFileSuffix) {
 		return []string{path}, nil
 	}
 	return nil, nil
@@ -123,7 +123,7 @@ func walkTestFiles(root string) ([]string, error) {
 			}
 			return nil
 		}
-		if strings.HasSuffix(path, "_test.go") {
+		if strings.HasSuffix(path, testFileSuffix) {
 			files = append(files, path)
 		}
 		return nil

@@ -9,6 +9,13 @@ import (
 	"strings"
 )
 
+// Shared file vocabulary: the Go test-file suffix and the mode for files
+// the tool writes (reports, patches, caches).
+const (
+	testFileSuffix   = "_test.go"
+	writableFilePerm = 0o644
+)
+
 // FindSourceFiles walks root recursively and returns the sorted list of .go
 // files excluding *_test.go and anything under vendor/.
 func FindSourceFiles(root string) ([]string, error) {
@@ -23,7 +30,7 @@ func FindSourceFiles(root string) ([]string, error) {
 			}
 			return nil
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, testFileSuffix) {
 			return nil
 		}
 		files = append(files, path)
@@ -49,7 +56,7 @@ func ChangedFiles(root string) ([]string, error) {
 		if path == "" {
 			continue
 		}
-		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+		if !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, testFileSuffix) {
 			continue
 		}
 		files = append(files, filepath.Join(root, path))

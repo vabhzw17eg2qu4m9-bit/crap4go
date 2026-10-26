@@ -62,7 +62,7 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 `profile`, `skill`, `memory`, and the gate subcommands (`file-naming`,
 `nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
 `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
-`folder-structure`, `anon-struct-signatures`, `duplicates`, `similarity`) dispatch on the first
+`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`) dispatch on the first
 argument only; anything else takes the analyze path above.
 
 ```sh
@@ -79,6 +79,7 @@ crap4go magic-constants           # flag hex colors outside consts and repeated 
 crap4go test-assertions           # flag tests with no fail-capable calls (t.Error/Fatal/..., panic)
 crap4go folder-structure           # flag dirs with loose .go files at the module root
 crap4go anon-struct-signatures     # flag anonymous struct types in function signatures
+crap4go scattered-constants        # flag literals repeated across 3+ files or duplicating a named const
 crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks across modules
 crap4go similarity --check --jaccard 0.6 --containment 0.9   # flag whole-file near-duplicates; exit 2
 crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on survivors
@@ -201,6 +202,25 @@ flagged either. Dart's `.$N` positional field access has no Go
 counterpart (nothing to port); anonymous struct values in bodies stay
 legal; a named function type blesses nothing — an anonymous struct inside
 `type Handler func() struct{ OK bool }` is still flagged.
+
+`scattered-constants` (from crap4dart e766d68's `scattered_constants`)
+is the corpus-wide sibling of `magic-constants`: instead of in-file
+repeats it keys literal values across the whole selection and reports
+two finding kinds. **Constant regression** — a named constant for the
+value already exists (Go: top-level `const` or top-level `var` with a
+plain literal initializer), so every hardcoded re-introduction flags
+immediately, at any occurrence count, even in the declaring file, naming
+the constant and its `file:line` to reference; the first declaration
+wins. **Scattered literal** — no constant exists and the value appears
+in `--min-files` (default 3) distinct files: one violation per
+occurrence, the "change 86400 in every service" hazard no per-file gate
+can see. Values compare semantically (`1_000`, `0x3E8` and `1000` are
+one fact). Never counted: strings under `--min-length` (4), numbers of
+magnitude at or below `--min-value` (100), char/imaginary literals,
+import paths, struct tags (protocol wire vocabulary), identifier-position
+strings (map keys, index operands, case labels), and by default
+`*_test.go` files plus files carrying the `// Code generated ... DO NOT
+EDIT.` marker.
 
 `duplicates` (from 0.2.0, plus dc64e9c's
 per-gate `sources`) tokenizes every scanned file with `go/scanner`

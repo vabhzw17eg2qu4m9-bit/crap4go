@@ -36,12 +36,12 @@ func RunUnusedFilesCommand(args []string, root string, stdout, stderr io.Writer)
 		return 1
 	}
 	if len(files) == 0 {
-		fmt.Fprintln(stdout, "No Go files to check.")
+		fmt.Fprintln(stdout, noGoFilesNotice)
 		return 0
 	}
 	violations, checked := CheckUnusedFiles(files, root, modulePath(root))
 	for _, v := range violations {
-		fmt.Fprintf(stdout, "%s: %s\n", v.Path, v.Message)
+		fmt.Fprintf(stdout, violationTextFormat, v.Path, v.Message)
 	}
 	if len(violations) > 0 {
 		fmt.Fprintf(stdout, "%d/%d packages are never imported\n", len(violations), checked)
