@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.21.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.20.0...v0.21.0) (2026-10-26)
+
+
+### Features
+
+* **gate:** folder-structure per-pattern caps, glob dirs, stem collapse ([#50](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/50)) ([e4a2502](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/e4a250239043fde1d265976ded670397ea595b65))
+
 ## [0.20.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.19.0...v0.20.0) (2026-10-26)
 
 
