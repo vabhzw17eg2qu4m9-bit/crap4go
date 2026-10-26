@@ -51,6 +51,11 @@ Subcommands (must be the first argument):
   crap4go anon-struct-signatures [--max-fields N] [paths...]
                                    Flag anonymous struct types in function
                                    signatures; exit 2
+  crap4go scattered-constants [--min-files N] [--min-length N]
+                    [--min-value N] [paths...]
+                                   Flag literals appearing in at least N
+                                   distinct files (corpus-wide, one violation
+                                   per occurrence); exit 2
   crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
                     [--timeout-seconds N] [--max-mutants N]
                     [--operators LIST] [--exclude GLOB]... [--cache]
@@ -66,6 +71,17 @@ Subcommands (must be the first argument):
 Note: Go's flag package stops parsing at the first non-flag argument, so all
 flags must appear before positional paths. Both -flag and --flag are accepted.
 `
+
+// Shared gate-subcommand output and flag vocabulary — the copy-pasted
+// formats and strings the scattered-constants dogfood consolidated.
+const (
+	violationLocationFormat = "%s:%d: %s\n"
+	violationTextFormat     = "%s: %s\n"
+	noGoFilesNotice         = "No Go files to check."
+	excludeFlagName         = "exclude"
+	excludeFlagUsage        = "glob of project-relative paths to skip (repeatable)"
+	thresholdFlagName       = "threshold"
+)
 
 // options holds the parsed, validated CLI configuration.
 type options struct {
@@ -98,7 +114,7 @@ func parseOptions(args []string, stdout, stderr io.Writer) (options, int, bool) 
 	help := fs.Bool("help", false, "print help and exit")
 	changed := fs.Bool("changed", false, "analyze git-changed files only")
 	coveragePath := fs.String("coverage", "coverage.out", "coverage profile path")
-	threshold := fs.Float64("threshold", 8.0, "CRAP threshold")
+	threshold := fs.Float64(thresholdFlagName, 8.0, "CRAP threshold")
 	runTests := fs.Bool("run-tests", false, "run go test before analyzing")
 
 	if err := fs.Parse(args); err != nil {
@@ -178,6 +194,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"similarity":             RunSimilarityCommand,
 	"memory":                 RunMemoryCommand,
 	"anon-struct-signatures": RunAnonStructSignaturesCommand,
+	"scattered-constants":    RunScatteredConstantsCommand,
 }
 
 // runSubcommand executes a subcommand when args[0] exactly matches a known

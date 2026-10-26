@@ -29,7 +29,7 @@ const (
 // suite, like upstream's ['test']. Scoping it to relevant test paths is the
 // consumer's responsibility: a mutant is killed only if the scoped suite
 // would kill it.
-var defaultMutationTestArgs = []string{"test", "./..."}
+var defaultMutationTestArgs = []string{goTestSubcommand, goTestAllPackages}
 
 // mutationOperator is one row of the declarative operator table: replacing
 // original with mutant produces one mutant, tagged category. Adapted from the
@@ -638,7 +638,7 @@ func verifyMutationTree(originals map[string][]byte) []string {
 	for path, want := range originals {
 		current, err := os.ReadFile(path)
 		if err != nil || !bytes.Equal(current, want) {
-			_ = os.WriteFile(path, want, 0o644)
+			_ = os.WriteFile(path, want, writableFilePerm)
 			violations = append(violations, path)
 		}
 	}
@@ -654,10 +654,10 @@ func runSingleMutant(site MutationSite, projectRoot string, timeout time.Duratio
 	if err != nil {
 		return 0, err
 	}
-	if err := os.WriteFile(site.File, site.applyTo(src), 0o644); err != nil {
+	if err := os.WriteFile(site.File, site.applyTo(src), writableFilePerm); err != nil {
 		return 0, err
 	}
-	defer func() { _ = os.WriteFile(site.File, src, 0o644) }() // always restore
+	defer func() { _ = os.WriteFile(site.File, src, writableFilePerm) }() // always restore
 	return runner(projectRoot, timeout, testArgs)
 }
 
@@ -791,7 +791,7 @@ func parseMutationFlags(args []string, stderr io.Writer) (mutationOptions, int, 
 	var operators string
 	fs.StringVar(&operators, "operators", "", "comma-separated operator categories (default: all)")
 	excludes := &stringSlice{}
-	fs.Var(excludes, "exclude", "glob of project-relative paths to skip (repeatable)")
+	fs.Var(excludes, excludeFlagName, excludeFlagUsage)
 	if err := fs.Parse(args); err != nil {
 		return mutationOptions{}, 1, false
 	}

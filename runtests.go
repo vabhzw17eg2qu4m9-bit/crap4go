@@ -6,12 +6,19 @@ import (
 	"os/exec"
 )
 
+// The `go test` invocation vocabulary shared by the commands that shell
+// out to the test tool.
+const (
+	goTestSubcommand  = "test"
+	goTestAllPackages = "./..."
+)
+
 // RunTests executes "go test ./... -coverprofile=coverage.out -covermode=atomic"
 // in root, wiring stdout and stderr through. Returns the command's error on a
 // non-zero exit so callers can surface it.
 func RunTests(root string) error {
 	return runGoTests(root,
-		[]string{"test", "./...", "-coverprofile=coverage.out", "-covermode=atomic"},
+		[]string{goTestSubcommand, goTestAllPackages, "-coverprofile=coverage.out", "-covermode=atomic"},
 		nil, os.Stdout, os.Stderr)
 }
 

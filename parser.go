@@ -8,9 +8,10 @@ import (
 
 // parseGoFile parses one Go source file from disk, returning its AST with
 // the file set used for line positions. Used by the gate subcommands.
+// Comments are parsed: scattered-constants reads the generated-code marker.
 func parseGoFile(path string) (*ast.File, *token.FileSet, error) {
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, path, nil, 0)
+	f, err := parser.ParseFile(fset, path, nil, parser.ParseComments)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -38,12 +38,12 @@ func RunMagicConstantsCommand(args []string, root string, stdout, stderr io.Writ
 		return 1
 	}
 	if len(files) == 0 {
-		fmt.Fprintln(stdout, "No Go files to check.")
+		fmt.Fprintln(stdout, noGoFilesNotice)
 		return 0
 	}
 	violations, checked := CheckMagicConstants(files, root)
 	for _, v := range violations {
-		fmt.Fprintf(stdout, "%s:%d: %s\n", v.Path, v.Line, v.Message)
+		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}
 	if len(violations) > 0 {
 		fmt.Fprintf(stdout, "%d magic constant(s) in %d files\n", len(violations), checked)

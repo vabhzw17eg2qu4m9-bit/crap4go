@@ -45,6 +45,10 @@ crap4go test-assertions [paths...] Flag tests with no fail-capable calls; exit 2
 crap4go anon-struct-signatures [--max-fields N] [paths...]
                                  Flag anonymous struct types in function
                                  signatures; exit 2
+crap4go scattered-constants [--min-files N] [--min-length N]
+                  [--min-value N] [paths...]
+                                 Flag literals repeated across distinct files
+                                 or duplicating a named const; exit 2
 crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
                    [--report percentage|clones] [--exclude GLOB]...
                    [--source PATH]... [--ignore-locals] [--ignore-literals]
@@ -70,7 +74,7 @@ combined). Unknown flags are usage errors.
 **Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`anon-struct-signatures`, `duplicates`, `mutation`, `similarity`)
+`anon-struct-signatures`, `scattered-constants`, `duplicates`, `mutation`, `similarity`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -320,7 +324,9 @@ comes from 0.6.0 (§11.13) with the 0.7–0.9 precision fixes,
 the per-gate `sources` key from dc64e9c; the CPD-parity clone machinery —
 `--report clones`, `--ignore-identifiers`, `--ignore-imports`,
 `--skip-duplicate-files`, token-equality window verification and
-shared-extent anchoring — ports d6c3ab6. `mutation` (§11.22) comes from
+shared-extent anchoring — ports d6c3ab6. `scattered-constants`
+(§11.13.1) comes from e766d68, completing the corpus-wide literal
+coverage `magic-constants` cannot see. `mutation` (§11.22) comes from
 c865ec3 (the unclebob/mutator research): the operator table, coverage
 gating, per-mutant test re-run and survivor violations port directly —
 Dart's `/`→`~/` row is dropped (Go integer division already truncates),
@@ -889,8 +895,8 @@ of `0` or less is a usage error.
 |      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
 |      | `banned-imports`, `magic-constants`, `test-assertions`,                  |
-|      | `anon-struct-signatures`, `duplicates`, `folder-structure`, `mutation`,  |
-|      | `similarity --check`).                                                   |
+|      | `anon-struct-signatures`, `scattered-constants`, `duplicates`,           |
+|      | `folder-structure`, `mutation`, `similarity --check`).                   |
 |      | (Also reported on stderr.)                                              |
 
 ## 27. `--run-tests`
@@ -1121,3 +1127,97 @@ Dogfooding: on crap4go's own source the gate flagged 4 shapes — the
 `map[string]struct{}` set idiom in similarity.go signatures — promoted to
 the named `shingleSet` type in the same commit; the gate now passes with
 443 signatures checked.
+
+## 31. `scattered-constants`
+
+```
+crap4go scattered-constants [--min-files N] [--min-length N] [--min-value N] [paths...]
+```
+
+Go adaptation of crap4dart e766d68's `scattered_constants` gate
+(§11.13.1): the corpus-wide sibling of `magic-constants`. Where
+magic-constants counts in-file repeats only — a literal used once per
+file in K files is invisible to it — scattered-constants scans the whole
+selection, keys literal values semantically, and reports two finding
+kinds:
+
+- **Constant regression.** The corpus already declares a named constant
+  for the value: every hardcoded re-introduction — a bare literal or a
+  duplicate declaration, at any occurrence count, even in the declaring
+  file — flags immediately (no `--min-files` wait), naming the constant
+  and its `file:line` to reference. The first declaration wins when
+  several share a value; only the winning declaration itself is exempt
+  from its own rule.
+- **Scattered literal.** No constant exists and the value appears in at
+  least `--min-files` distinct files (default 3): one violation per
+  occurrence — the "change 86400 in every service" hazard that in-file
+  repeat counting cannot see. The message carries the scope (files and
+  occurrences), the extract-and-verify fix shape, and the verification
+  clause: all occurrences must mean the same thing.
+
+**Registry (Go adaptation).** Upstream registers `const` declarations.
+Go's referencable named-value forms are top-level `const` (single or
+block) and top-level `var` with a plain string/numeric initializer —
+both register. Function-local `const` declarations cannot be referenced
+across files: they count toward the scattered minimum but never anchor a
+reference. Computed initializers (`const s = a + "b"`) register nothing;
+their inner literals are ordinary sites. The registry obeys the same
+value filters as the sites — a below-threshold value registers nothing,
+because no site for it can ever exist to regress.
+
+**Semantic comparison:** strings key by unquoted value; numbers key by
+value, so digit separators (`1_000`), bases (`0x3E8`) and float
+spellings (`1000.50` vs `1000.5`) do not split a fact.
+
+**Never counted:** strings shorter than `--min-length` (default 4),
+numbers with magnitude at or below `--min-value` (default 100 — 0, 1,
+10, 100 happen everywhere), char and imaginary literals (no upstream
+counterpart), import paths (structural references — Go import paths are
+string tokens in the AST, so the walk skips `ImportSpec`), string
+literals in identifier position (map keys, index operands, case labels —
+the same protocol-vocabulary rule as magic-constants), and struct tags
+(Go adaptation: tags hold protocol wire names and must stay literals).
+Excluded by default: `*_test.go` files (upstream's `test/**`) and
+generated files — those carrying the `// Code generated ... DO NOT
+EDIT.` marker comment (Go's generated-code convention, the analog of
+upstream's `**.g.dart` exclude globs). Excluded files leave both the
+registry and the counts entirely.
+
+Output: one line per violation —
+`<relative path>:<line>: hardcoded <value> duplicates constant `K`
+(<file>:<line>) — reference the constant instead of repeating the
+literal`, or `<relative path>:<line>: literal <value> repeats in N files
+(M occurrences) — extract a shared constant and reference it from every
+site; verify all occurrences mean the same thing first` — plus a
+summary. Exit code 2 iff there are violations, 0 on a clean or empty
+selection, 1 on usage errors (bad flags, `--min-files < 2`,
+`--min-length < 1`, `--min-value < 0`).
+
+Killing tests (scatteredconstants_test.go):
+`in-file_body_repeats_never_flag` in one and two files (the core
+distinct-file semantic — an in-file repeat count would flag the six
+occurrences), `two_distinct_body_literals_stay_clean` plus
+`three_distinct_files_flag_per_occurrence` (the 2-vs-3 `--min-files`
+boundary — an `>=` off-by-one flips both),
+`registry_rule_fires_on_one_file_with_no_min-files_wait`,
+`re-introduction_flags_even_in_the_declaring_file` and
+`duplicate_local_const_flags` (the constant-regression rule: no
+min-files wait, winner self-exemption, duplicate declarations caught),
+`first_declaration_wins_on_shared_values`,
+`digit_separators_and_number_bases_are_one_fact` (semantic comparison
+through the registry), and the exemption quartet (protocol positions,
+import paths, struct tags, small values across three files each).
+
+Dogfooding: the first run flagged 63 scattered literals — the
+copy-pasted gate-subcommand vocabulary (`"%s:%d: %s\n"`, `"%s: %s\n"`,
+`No Go files to check.`, the `--exclude` flag registration with its help
+text, `_test.go`, `0o644`, the `go test` subcommand/package vocabulary,
+the `--threshold` flag name) consolidated into shared constants in
+cli.go, files.go and runtests.go in the same commit. The regression rule
+then caught memory.go hardcoding similaritygate's `console` format
+default twice — both now reference `defaultSimFormat`. Accepted
+remainder (1 finding): memory's `--badge-threshold` default 500 is a
+coincidence with mutation's `defaultMutationMaxMutants = 500` —
+different facts (MB vs mutant count) sharing a value, and the gate's
+verification clause puts that call with the human (upstream's
+self-config accepts the same class).

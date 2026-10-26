@@ -57,7 +57,7 @@ func parseProfileOptions(args []string, stderr io.Writer) (profileOptions, int, 
 	fs := flag.NewFlagSet("crap4go profile", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	name := fs.String("name", "", "run only tests matching this pattern (go test -run)")
-	threshold := fs.Float64("threshold", 0, "exit 2 when a method's total exceeds this many ms (0 = off)")
+	threshold := fs.Float64(thresholdFlagName, 0, "exit 2 when a method's total exceeds this many ms (0 = off)")
 	top := fs.Int("top", 20, "console rows shown")
 	if err := fs.Parse(args); err != nil {
 		return profileOptions{}, 1, false
@@ -177,7 +177,7 @@ func copyModule(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		return os.WriteFile(target, data, 0o644)
+		return os.WriteFile(target, data, writableFilePerm)
 	})
 }
 
@@ -209,7 +209,7 @@ func instrumentFile(path, root string, collectors map[string]string) error {
 	if err != nil || !changed {
 		return nil
 	}
-	if err := os.WriteFile(path, out, 0o644); err != nil {
+	if err := os.WriteFile(path, out, writableFilePerm); err != nil {
 		return err
 	}
 	collectors[filepath.Dir(path)] = pkg
@@ -280,7 +280,7 @@ func funcDisplayName(fd *ast.FuncDecl) string {
 func writeCollectors(collectors map[string]string) error {
 	for dir, pkg := range collectors {
 		path := filepath.Join(dir, "zz_crap_collector.go")
-		if err := os.WriteFile(path, []byte(collectorSource(pkg)), 0o644); err != nil {
+		if err := os.WriteFile(path, []byte(collectorSource(pkg)), writableFilePerm); err != nil {
 			return err
 		}
 	}
@@ -301,14 +301,14 @@ func runInstrumentedTests(root, dir, outDir string, opts profileOptions, stdout,
 // upstream 0.9.3 bug shape; the port never had it, verified by
 // TestProfileTestArgs).
 func profileTestArgs(root string, opts profileOptions) []string {
-	args := []string{"test", "-count=1"}
+	args := []string{goTestSubcommand, "-count=1"}
 	if opts.name != "" {
 		args = append(args, "-run", opts.name)
 	}
 	if len(opts.paths) > 0 {
 		return append(args, remapProfilePaths(root, opts.paths)...)
 	}
-	return append(args, "./...")
+	return append(args, goTestAllPackages)
 }
 
 // remapProfilePaths remaps explicit test paths into the instrumented temp
@@ -578,7 +578,7 @@ func writeProfileReports(root string, profiles []methodProfile, thresholdMs floa
 	stamp := time.Now().Format("20060102-150405")
 	txtPath := filepath.Join(dir, "profile-"+stamp+".txt")
 	jsonPath := filepath.Join(dir, "profile-"+stamp+".json")
-	if err := os.WriteFile(txtPath, []byte(FormatProfileReport(profiles, 0, thresholdMs)), 0o644); err != nil {
+	if err := os.WriteFile(txtPath, []byte(FormatProfileReport(profiles, 0, thresholdMs)), writableFilePerm); err != nil {
 		fmt.Fprintln(stderr, err)
 		return
 	}
@@ -612,7 +612,7 @@ func writeProfileJSON(path string, profiles []methodProfile) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	return os.WriteFile(path, data, writableFilePerm)
 }
 
 // profileJSONReport is the JSON profile report document.
