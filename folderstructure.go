@@ -255,7 +255,7 @@ func globDirs(pattern, root string) ([]string, error) {
 // skipDirName reports whether a directory is never enumerated by glob
 // expansion: hidden (dot-prefixed), vendor and build trees.
 func skipDirName(name string) bool {
-	return strings.HasPrefix(name, ".") || name == "vendor" || name == "build"
+	return strings.HasPrefix(name, ".") || name == vendorDirName || name == "build"
 }
 
 // countUnits counts the distinct logical non-test .go units directly inside

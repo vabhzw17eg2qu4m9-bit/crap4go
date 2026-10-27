@@ -45,21 +45,25 @@ type NamedScatteredConstant struct {
 // scatteredOptions holds the parsed `scattered-constants` subcommand
 // configuration.
 type scatteredOptions struct {
-	minFiles  int
-	minLength int
-	minValue  int
-	paths     []string
+	minFiles    int
+	minLength   int
+	minValue    int
+	flagAliases bool
+	paths       []string
 }
 
 // RunScatteredConstantsCommand implements `crap4go scattered-constants
-// [--min-files N] [--min-length N] [--min-value N] [paths...]`: the
-// corpus-wide sibling of magic-constants. It flags two kinds of findings
-// (ported from crap4dart e766d68): constant regressions — a named const or
-// top-level var for the value already exists, so every hardcoded
-// re-introduction flags immediately, naming the constant to reference — and
-// scattered literals appearing in at least minFiles distinct files (one
-// violation per occurrence), the "change 86400 in every service" hazard that
-// in-file repeat counting cannot see. Exit code 2 iff there are violations.
+// [--min-files N] [--min-length N] [--min-value N] [--aliases] [paths...]`:
+// the corpus-wide sibling of magic-constants. It flags three kinds of
+// findings (ported from crap4dart e766d68 and a314b485): constant
+// regressions — a named const or top-level var for the value already
+// exists, so every hardcoded re-introduction flags immediately, naming the
+// constant to reference — scattered literals appearing in at least minFiles
+// distinct files (one violation per occurrence), the "change 86400 in every
+// service" hazard that in-file repeat counting cannot see, and pure value
+// aliases — an unexported const whose initializer is another constant's
+// bare identifier (suppressed with --aliases=false). Exit code 2 iff there
+// are violations.
 func RunScatteredConstantsCommand(args []string, root string, stdout, stderr io.Writer) int {
 	opts, code, ok := parseScatteredFlags(args, stderr)
 	if !ok {
@@ -74,7 +78,7 @@ func RunScatteredConstantsCommand(args []string, root string, stdout, stderr io.
 		fmt.Fprintln(stdout, noGoFilesNotice)
 		return 0
 	}
-	violations, checked := CheckScatteredConstants(files, root, opts.minFiles, opts.minLength, opts.minValue)
+	violations, checked := CheckScatteredConstants(files, root, opts.minFiles, opts.minLength, opts.minValue, opts.flagAliases)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}
@@ -100,6 +104,7 @@ func parseScatteredFlags(args []string, stderr io.Writer) (scatteredOptions, int
 	fs.IntVar(&opts.minFiles, "min-files", defaultScatteredMinFiles, "distinct files a value must reach before its occurrences are flagged")
 	fs.IntVar(&opts.minLength, "min-length", defaultScatteredMinLength, "string values shorter than this are coincidence")
 	fs.IntVar(&opts.minValue, "min-value", defaultScatteredMinValue, "numbers with magnitude at or below this are coincidence")
+	fs.BoolVar(&opts.flagAliases, "aliases", true, "flag pure value aliases — unexported consts initialized to another constant's identifier; --aliases=false keeps them")
 	if err := fs.Parse(args); err != nil {
 		return scatteredOptions{}, 1, false
 	}
@@ -120,12 +125,14 @@ func parseScatteredFlags(args []string, stderr io.Writer) (scatteredOptions, int
 }
 
 // CheckScatteredConstants scans every parseable file and returns the
-// constant-regression and scattered-literal violations plus the number of
-// files checked. Values compare semantically: digit separators (1_000) and
-// number bases (0x3E8) do not split a fact.
-func CheckScatteredConstants(files []string, root string, minFiles, minLength, minValue int) ([]ScatteredConstantsViolation, int) {
+// constant-regression and scattered-literal violations — plus, when
+// flagAliases is on, pure value alias violations — and the number of files
+// checked. Values compare semantically: digit separators (1_000) and number
+// bases (0x3E8) do not split a fact.
+func CheckScatteredConstants(files []string, root string, minFiles, minLength, minValue int, flagAliases bool) ([]ScatteredConstantsViolation, int) {
 	literals := map[string]*scatteredLiteral{}
 	constants := map[string]NamedScatteredConstant{}
+	var aliases []scatteredAlias
 	checked := 0
 	for _, f := range files {
 		file, fset, err := parseGoFile(f)
@@ -136,9 +143,19 @@ func CheckScatteredConstants(files []string, root string, minFiles, minLength, m
 			continue
 		}
 		checked++
-		mergeScatteredHits(collectScatteredHits(file, fset, minLength, minValue), relPath(root, f), literals, constants)
+		hits, fileAliases := collectScatteredHits(file, fset, minLength, minValue)
+		rel := relPath(root, f)
+		for i := range fileAliases {
+			fileAliases[i].file = rel
+		}
+		aliases = append(aliases, fileAliases...)
+		mergeScatteredHits(hits, rel, literals, constants)
 	}
-	return scatteredViolations(literals, constants, minFiles), checked
+	violations := scatteredViolations(literals, constants, minFiles)
+	if flagAliases {
+		violations = append(violations, scatteredAliasViolations(aliases)...)
+	}
+	return violations, checked
 }
 
 // mergeScatteredHits folds one file's hits into the corpus maps: top-level
@@ -206,24 +223,44 @@ type scatteredHit struct {
 	name     string
 }
 
+// scatteredAlias is one pure value alias: a const declaration whose
+// initializer is another constant's bare identifier — `const x = kY`
+// (ported from crap4dart a314b485's 'aliases' rule).
+type scatteredAlias struct {
+	name   string
+	target string
+	file   string
+	line   int
+}
+
+// scatteredPredeclaredConsts are Go's predeclared constant identifiers:
+// true and false are Go's boolean literals and iota is the enum machinery —
+// initializing a const with one is computed, not an alias (nil cannot
+// legally initialize a const and is listed for completeness).
+var scatteredPredeclaredConsts = map[string]bool{
+	"true": true, "false": true, "iota": true, "nil": true,
+}
+
 // scatteredCollector accumulates one file's hits while marking the
 // identifier-position lines (map keys, index operands, case labels, struct
 // tags) that never count.
 type scatteredCollector struct {
-	fset   *token.FileSet
-	exempt map[int]bool
-	seen   map[ast.Node]bool
-	hits   []scatteredHit
+	fset    *token.FileSet
+	exempt  map[int]bool
+	seen    map[ast.Node]bool
+	hits    []scatteredHit
+	aliases []scatteredAlias
 }
 
 // collectScatteredHits walks file once and returns the literal occurrences
-// eligible for corpus comparison. Named declarations — every const and
-// top-level var with a plain string/int/float initializer (Go's
-// referencable-value forms) — contribute isDecl hits that register the
-// corpus constant; computed initializers and all other literals become
-// ordinary sites. Import paths, struct tags and identifier-position strings
-// are protocol vocabulary and never collected.
-func collectScatteredHits(file *ast.File, fset *token.FileSet, minLength, minValue int) []scatteredHit {
+// eligible for corpus comparison plus the pure value aliases found in const
+// declarations. Named declarations — every const and top-level var with a
+// plain string/int/float initializer (Go's referencable-value forms) —
+// contribute isDecl hits that register the corpus constant; computed
+// initializers and all other literals become ordinary sites. Import paths,
+// struct tags and identifier-position strings are protocol vocabulary and
+// never collected.
+func collectScatteredHits(file *ast.File, fset *token.FileSet, minLength, minValue int) ([]scatteredHit, []scatteredAlias) {
 	c := &scatteredCollector{fset: fset, exempt: map[int]bool{}, seen: map[ast.Node]bool{}}
 	for _, decl := range file.Decls {
 		if gd, ok := decl.(*ast.GenDecl); ok && (gd.Tok == token.CONST || gd.Tok == token.VAR) {
@@ -233,7 +270,7 @@ func collectScatteredHits(file *ast.File, fset *token.FileSet, minLength, minVal
 	ast.Inspect(file, func(n ast.Node) bool {
 		return c.walk(n, minLength, minValue)
 	})
-	return c.hits
+	return c.hits, c.aliases
 }
 
 // walk handles one node of the file walk: imports stop the descent,
@@ -278,6 +315,9 @@ func (c *scatteredCollector) markProtocol(n ast.Node) {
 func (c *scatteredCollector) collectSpecs(decl *ast.GenDecl, topLevel bool, minLength, minValue int) {
 	for _, spec := range decl.Specs {
 		vs := spec.(*ast.ValueSpec)
+		if !topLevel {
+			c.collectAlias(vs)
+		}
 		for i, value := range vs.Values {
 			lit, ok := value.(*ast.BasicLit)
 			if !ok || c.seen[lit] {
@@ -294,6 +334,27 @@ func (c *scatteredCollector) collectSpecs(decl *ast.GenDecl, topLevel bool, minL
 			hit.name = vs.Names[i].Name
 			c.hits = append(c.hits, hit)
 		}
+	}
+}
+
+// collectAlias records the pure value aliases of one const spec's
+// initializers: a bare identifier naming another constant. Called with
+// topLevel=false only — the Inspect walk sees every const declaration
+// (top-level and nested) exactly once, while the Decls loop overlaps it
+// for the registry pass and var specs never alias. true/false/iota are
+// computed, not aliases; a missing initializer (an iota-block
+// continuation) has nothing to alias.
+func (c *scatteredCollector) collectAlias(vs *ast.ValueSpec) {
+	for i, value := range vs.Values {
+		id, ok := value.(*ast.Ident)
+		if !ok || scatteredPredeclaredConsts[id.Name] {
+			continue
+		}
+		c.aliases = append(c.aliases, scatteredAlias{
+			name:   vs.Names[i].Name,
+			target: id.Name,
+			line:   c.fset.Position(vs.Pos()).Line,
+		})
 	}
 }
 
@@ -463,6 +524,27 @@ func scatteredRegressionViolations(lit *scatteredLiteral, shared NamedScatteredC
 		violations = append(violations, ScatteredConstantsViolation{
 			Path: site.file, Line: site.line,
 			Message: fmt.Sprintf("hardcoded %s duplicates constant `%s` (%s:%d) — reference the constant instead of repeating the literal", lit.display, shared.Name, shared.File, shared.Line),
+		})
+	}
+	return violations
+}
+
+// scatteredAliasViolations flags private pure value aliases (the upstream
+// a314b485 'aliases' rule): an unexported const initialized to another
+// constant's bare identifier adds a name without information — reference
+// the constant directly. Exported declarations are exempt (re-export shims
+// are a deliberate API shape), the blank identifier is exempt (it discards
+// the value; it introduces no name), and computed initializers never reach
+// here.
+func scatteredAliasViolations(aliases []scatteredAlias) []ScatteredConstantsViolation {
+	var violations []ScatteredConstantsViolation
+	for _, a := range aliases {
+		if ast.IsExported(a.name) || a.name == "_" {
+			continue
+		}
+		violations = append(violations, ScatteredConstantsViolation{
+			Path: a.file, Line: a.line,
+			Message: fmt.Sprintf("alias `%s` adds no information — reference `%s` directly", a.name, a.target),
 		})
 	}
 	return violations

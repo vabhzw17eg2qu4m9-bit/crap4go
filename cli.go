@@ -56,10 +56,12 @@ Subcommands (must be the first argument):
                                    Flag anonymous struct types in function
                                    signatures; exit 2
   crap4go scattered-constants [--min-files N] [--min-length N]
-                    [--min-value N] [paths...]
+                    [--min-value N] [--aliases] [paths...]
                                    Flag literals appearing in at least N
                                    distinct files (corpus-wide, one violation
-                                   per occurrence); exit 2
+                                   per occurrence), hardcoded re-uses of a
+                                   named const, and pure value aliases
+                                   (--aliases=false keeps them); exit 2
   crap4go mutation [--coverage PATH] [--min-score F] [--max-survivors N]
                     [--timeout-seconds N] [--max-mutants N]
                     [--operators LIST] [--exclude GLOB]... [--cache]

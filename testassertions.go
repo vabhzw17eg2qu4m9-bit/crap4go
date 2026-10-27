@@ -118,7 +118,7 @@ func walkTestFiles(root string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == "vendor" {
+			if d.Name() == vendorDirName {
 				return filepath.SkipDir
 			}
 			return nil
