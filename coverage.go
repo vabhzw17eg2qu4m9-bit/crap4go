@@ -9,6 +9,14 @@ import (
 	"strconv"
 )
 
+// coverLineRe matches a single cover-profile data line:
+//
+//	pkg/path/file.go:startLine.startCol,endLine.endCol numStmt count
+//
+// This is the same shape emitted by "go test -coverprofile" and parsed by
+// golang.org/x/tools/cover (reimplemented here with stdlib only).
+var coverLineRe = regexp.MustCompile(`^(.+):([0-9]+)\.([0-9]+),([0-9]+)\.([0-9]+) ([0-9]+) ([0-9]+)$`)
+
 // CoverBlock is one coverage profile entry: the half-open source range and the
 // statement count for that block. Count > 0 means the block was executed.
 type CoverBlock struct {
@@ -24,14 +32,6 @@ type CoverBlock struct {
 type FileCoverage struct {
 	Blocks []CoverBlock
 }
-
-// coverLineRe matches a single cover-profile data line:
-//
-//	pkg/path/file.go:startLine.startCol,endLine.endCol numStmt count
-//
-// This is the same shape emitted by "go test -coverprofile" and parsed by
-// golang.org/x/tools/cover (reimplemented here with stdlib only).
-var coverLineRe = regexp.MustCompile(`^(.+):([0-9]+)\.([0-9]+),([0-9]+)\.([0-9]+) ([0-9]+) ([0-9]+)$`)
 
 // ParseCoverProfile reads and parses a Go cover profile from path. The first
 // line is "mode: <mode>" and is consumed. Returns a map keyed by the profile's

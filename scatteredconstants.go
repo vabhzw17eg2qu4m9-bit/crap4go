@@ -27,16 +27,20 @@ const (
 // generated-code exclude globs (**.g.dart and friends).
 var generatedMarkerRE = regexp.MustCompile(`^// Code generated .* DO NOT EDIT\.$`)
 
+// scatteredPredeclaredConsts are Go's predeclared constant identifiers:
+// true and false are Go's boolean literals and iota is the enum machinery —
+// initializing a const with one is computed, not an alias (nil cannot
+// legally initialize a const and is listed for completeness).
+var scatteredPredeclaredConsts = map[string]bool{
+	"true": true, "false": true, "iota": true, "nil": true,
+}
+
 // ScatteredConstantsViolation is one scattered literal occurrence.
 type ScatteredConstantsViolation struct {
 	Path    string
 	Line    int
 	Message string
 }
-
-// ignorePath/ignoreLine expose the location to the shared ignore filter.
-func (v ScatteredConstantsViolation) ignorePath() string { return v.Path }
-func (v ScatteredConstantsViolation) ignoreLine() int    { return v.Line }
 
 // NamedScatteredConstant is a named declaration in the corpus that every
 // hardcoded occurrence of the same value should reference.
@@ -55,6 +59,61 @@ type scatteredOptions struct {
 	flagAliases bool
 	paths       []string
 }
+
+// scatteredSite is one occurrence of a literal value; isDecl marks the
+// plain-literal initializer of a named const or top-level var declaration.
+type scatteredSite struct {
+	file   string
+	line   int
+	isDecl bool
+}
+
+// scatteredLiteral tracks one literal value across the corpus: the display
+// form for messages and every occurrence site.
+type scatteredLiteral struct {
+	display string
+	sites   []scatteredSite
+}
+
+// scatteredHit is one collected occurrence before corpus aggregation; decl
+// hits carry the declaring identifier's name, and topLevel decl hits are
+// the referencable forms that register the corpus constant (top-level const
+// and top-level var; a function-local const cannot anchor a cross-file
+// reference).
+type scatteredHit struct {
+	key      string
+	display  string
+	line     int
+	isDecl   bool
+	topLevel bool
+	name     string
+}
+
+// scatteredAlias is one pure value alias: a const declaration whose
+// initializer is another constant's bare identifier — `const x = kY`
+// (ported from crap4dart a314b485's 'aliases' rule).
+type scatteredAlias struct {
+	name   string
+	target string
+	file   string
+	line   int
+}
+
+// scatteredCollector accumulates one file's hits while marking the
+// identifier-position lines (map keys, index operands, case labels, struct
+// tags) that never count.
+type scatteredCollector struct {
+	fset    *token.FileSet
+	exempt  map[int]bool
+	seen    map[ast.Node]bool
+	hits    []scatteredHit
+	aliases []scatteredAlias
+}
+
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v ScatteredConstantsViolation) ignorePath() string { return v.Path }
+
+func (v ScatteredConstantsViolation) ignoreLine() int { return v.Line }
 
 // RunScatteredConstantsCommand implements `crap4go scattered-constants
 // [--min-files N] [--min-length N] [--min-value N] [--aliases] [paths...]`:
@@ -197,64 +256,6 @@ func scatteredSkipDefault(path string, file *ast.File) bool {
 		}
 	}
 	return false
-}
-
-// scatteredSite is one occurrence of a literal value; isDecl marks the
-// plain-literal initializer of a named const or top-level var declaration.
-type scatteredSite struct {
-	file   string
-	line   int
-	isDecl bool
-}
-
-// scatteredLiteral tracks one literal value across the corpus: the display
-// form for messages and every occurrence site.
-type scatteredLiteral struct {
-	display string
-	sites   []scatteredSite
-}
-
-// scatteredHit is one collected occurrence before corpus aggregation; decl
-// hits carry the declaring identifier's name, and topLevel decl hits are
-// the referencable forms that register the corpus constant (top-level const
-// and top-level var; a function-local const cannot anchor a cross-file
-// reference).
-type scatteredHit struct {
-	key      string
-	display  string
-	line     int
-	isDecl   bool
-	topLevel bool
-	name     string
-}
-
-// scatteredAlias is one pure value alias: a const declaration whose
-// initializer is another constant's bare identifier — `const x = kY`
-// (ported from crap4dart a314b485's 'aliases' rule).
-type scatteredAlias struct {
-	name   string
-	target string
-	file   string
-	line   int
-}
-
-// scatteredPredeclaredConsts are Go's predeclared constant identifiers:
-// true and false are Go's boolean literals and iota is the enum machinery —
-// initializing a const with one is computed, not an alias (nil cannot
-// legally initialize a const and is listed for completeness).
-var scatteredPredeclaredConsts = map[string]bool{
-	"true": true, "false": true, "iota": true, "nil": true,
-}
-
-// scatteredCollector accumulates one file's hits while marking the
-// identifier-position lines (map keys, index operands, case labels, struct
-// tags) that never count.
-type scatteredCollector struct {
-	fset    *token.FileSet
-	exempt  map[int]bool
-	seen    map[ast.Node]bool
-	hits    []scatteredHit
-	aliases []scatteredAlias
 }
 
 // collectScatteredHits walks file once and returns the literal occurrences

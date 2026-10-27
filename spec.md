@@ -1369,3 +1369,100 @@ mutant count) — now carries a trailing
 Before: `memory.go:587: hardcoded 500 duplicates constant
 `defaultMutationMaxMutants``, exit 2. After: exit 0. The exception is
 enforced by the gate instead of prose.
+
+## 33. The `reorder` command
+
+`reorder [--dry-run] [paths...]` (ported from crap4dart 24a6f24f,
+adapted to Go's declaration model) shall rewrite each listed Go file
+(default selection: the standard rules — non-test, non-vendor `.go`
+files under the current directory; an explicit file path is honored
+verbatim) so its top-level declarations appear in the canonical order:
+imports, constants, variables, types, functions. Go has no class
+bodies, so unlike the Dart original (whose canonical scope is the class
+member list) the canonical scope here is the whole file's declaration
+list — the de-facto Go convention — and the Dart private-method
+category has no analog: Go's convention does not split
+exported/unexported at file scope, so functions are one category.
+
+Members within one category shall keep their original relative order (a
+stable partition — the command never sorts alphabetically). Doc
+comments and whole-line comment blocks above a declaration shall move
+with it — including a block separated from the declaration by a single
+blank line; two or more blank lines detach the block, and a detached
+block between two declarations shall stick to the preceding one, so a
+rewrite never drops a comment (a deliberate deviation: upstream's gap
+rewrite silently discards unattached middle blocks; Go code carries too
+many section comments for that). Multi-line `/* */` blocks attach
+forward when directly above a declaration (the parser's doc group);
+detached from the declaration below, their tail lines are not
+whole-line comments, so nothing claims them and the gap glue keeps
+them with the preceding declaration. A comment group starting on a
+declaration's line — a trailing same-line comment and its contiguous
+continuation lines — belongs to that declaration, wherever the parser
+would report it. `//line` directives ride with the declaration they
+precede, and the transform shall index raw, directive-unadjusted
+positions (`PositionFor(_, false)`): a cgo- or generator-style
+directive shifts the parser's adjusted line numbers away from the raw
+file, and indexing the line table with them is out of range (a crash
+would violate the never-fatal contract). Build tags, the package doc
+and everything before the first declaration stay put (the first
+declaration's walk never goes above the package clause), as does
+everything after the last declaration.
+
+The enum rule maps to Go's grouped declarations: a parenthesized
+`const`/`var`/`type` block moves whole — its internal spec order
+(`iota` arithmetic, parallel assignments) and struct field order are
+semantics and are never touched. Package-level var initialization is
+dependency-driven (Go spec), not source order, so moving whole var
+declarations cannot change observable initialization; the stable
+partition preserves the relative order of functions, so several
+`init()` functions in one file keep their execution order.
+
+The transform shall be deterministic and idempotent: the same input
+shall produce the same output, already-canonical files shall be left
+byte-identical (whatever their layout — declarations sharing a line via
+explicit semicolons and odd spacing are preserved as written), and
+reordering an already-reordered file shall not change it. Only the
+rewritten span is normalized: slices join with one blank line in the
+file's own line-ending style (LF or CRLF, preserved), and a rewritten
+LF file is then passed through gofmt's own printer (`go/format.Source`)
+so the output is gofmt-clean by construction — reordering can create
+new adjacency groups of one-line declarations whose columnar body
+alignment no longer matches; CRLF files skip that pass (the printer
+emits LF only) and keep their line endings. Already-canonical files are
+never reformatted. With `--dry-run`
+(`-n`) the command shall write nothing, list the files that would
+change, and exit 2 when at least one would (0 otherwise); without it,
+files are written and the command exits 0. Files that fail to parse
+shall be skipped with a note and shall not fail the run.
+
+Killing tests (reorder_test.go): `TestReorderCanonicalSequence` /
+`TestReorderStableWithinCategory` (order + stable partition),
+`TestReorderCanonicalByteIdentical` (canonical files untouched whatever
+their layout), `TestReorderGroupedBlocksMoveWhole` (iota block whole),
+`TestReorderInitRelativeOrderPreserved` (init() order),
+`TestReorderDocCommentsMoveWithDecl` / `TestReorderOneBlankAttaches` /
+`TestReorderTwoBlanksDetachToPreceding` (one-blank attach, two-blank
+detach, no comment dropped), `TestReorderTrailingSameLineCommentRides`,
+`TestReorderPreambleNeverEaten` (build tag + package doc), 
+`TestReorderSameLineDecls` (explicit-semicolon shared lines),
+`TestReorderCRLFPreserved` + `TestReorderCRLFCommandRoundTrip`
+(line-ending preservation), `TestReorderMultiLineBlockDocMoves`,
+`TestReorderLineDirectiveNoPanic` (raw positions under `//line`
+directives — the directive rides with its declaration, a leading one
+stays in the preamble), `TestReorderMultiLineBlockInGapNotDropped`
+(two-blank-detached multi-line block glues to the preceding
+declaration, never dropped), `TestReorderFirstDeclOneBlankAttach`
+(comment one blank above the first declaration rides with it; floor is
+the package clause line),
+`TestReorderParseErrorsAndTinyFiles`, the `reorderFixtures` invariants
+battery and `TestReorderRealRepoFiles` (idempotence + token-multiset
+preservation + parseability over a fixture corpus and real repository
+files), and the command-level `TestRunReorderCommand*` (dry-run exit 2
+without writing, write + exit 0, second run already-canonical,
+parse-error skip is not fatal, default selection excludes test/vendor
+files while explicit paths are honored).
+
+Dogfooding: `go run . reorder .` reorders the port's own source; the
+second run is a no-op (repo-scale idempotence proof), `gofmt -l`
+reports nothing afterwards, and the suite stays green.

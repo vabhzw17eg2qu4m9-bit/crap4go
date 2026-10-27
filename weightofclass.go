@@ -22,9 +22,19 @@ type WeightViolation struct {
 	Message string
 }
 
+// WeightStats is the exported-member profile of one named struct type.
+type WeightStats struct {
+	Name            string
+	Path            string
+	Line            int
+	Fields          int
+	ExportedMethods int
+}
+
 // ignorePath/ignoreLine expose the location to the shared ignore filter.
 func (v WeightViolation) ignorePath() string { return v.Path }
-func (v WeightViolation) ignoreLine() int    { return v.Line }
+
+func (v WeightViolation) ignoreLine() int { return v.Line }
 
 // RunWeightOfClassCommand implements `crap4go weight-of-class [paths...]`:
 // it flags exported named struct types whose ratio of exported fields to
@@ -51,15 +61,6 @@ func RunWeightOfClassCommand(args []string, root string, stdout, stderr io.Write
 	}
 	fmt.Fprintf(stdout, "%d types within weight %.2f\n", checked, maxWeight)
 	return 0
-}
-
-// WeightStats is the exported-member profile of one named struct type.
-type WeightStats struct {
-	Name            string
-	Path            string
-	Line            int
-	Fields          int
-	ExportedMethods int
 }
 
 // CheckWeightOfClass evaluates every exported named struct type and returns

@@ -22,6 +22,14 @@ const (
 	defaultDupMinLines  = 5
 )
 
+const (
+	dupReportPercentage dupReport = iota
+	dupReportClones
+)
+
+// dupHashBase is the Rabin-Karp rolling base (upstream's 2^64/φ constant).
+const dupHashBase = 0x9e3779b97f4a7c15
+
 // defaultDupExcludes mirrors the port's standard source exclusions (the
 // same set FindSourceFiles skips: test files and vendor/), applied on top
 // of the scan set so --source additions follow the same rules.
@@ -55,10 +63,6 @@ type DuplicationViolation struct {
 	Message string
 }
 
-// ignorePath/ignoreLine expose the location to the shared ignore filter.
-func (v DuplicationViolation) ignorePath() string { return v.Path }
-func (v DuplicationViolation) ignoreLine() int    { return v.Line }
-
 // duplicationResult aggregates the scan: violations, the number of
 // tokenized files, the duplicated-line percentage across all of them and
 // the one-line summary the command prints.
@@ -90,10 +94,39 @@ type dupOptions struct {
 // clone groups.
 type dupReport int
 
-const (
-	dupReportPercentage dupReport = iota
-	dupReportClones
-)
+// dupScope is one outermost function scope: identifiers declared inside
+// the 0-based offset range [start, end) are renamed consistently for
+// clone matching (ported from upstream's _FunctionScope).
+type dupScope struct {
+	start, end   int
+	names        map[string]bool
+	placeholders map[string]string
+}
+
+// dupPos is a token window's position inside the scan's file list.
+type dupPos struct {
+	file  int
+	token int
+}
+
+// dupOcc is one occurrence of a clone group: the token range [start, end)
+// of one file.
+type dupOcc struct {
+	file  int
+	start int
+	end   int
+}
+
+// dupGroup is one candidate clone group: occurrences of the same token
+// block, each spanning the same token count.
+type dupGroup struct {
+	occurrences []dupOcc
+}
+
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v DuplicationViolation) ignorePath() string { return v.Path }
+
+func (v DuplicationViolation) ignoreLine() int { return v.Line }
 
 // parseDupReport parses a --report value: "percentage" or "clones".
 func parseDupReport(value string) (dupReport, bool) {
@@ -453,15 +486,6 @@ func dupNormalize(value string, tok token.Token, offset int, scopes []*dupScope,
 	return value
 }
 
-// dupScope is one outermost function scope: identifiers declared inside
-// the 0-based offset range [start, end) are renamed consistently for
-// clone matching (ported from upstream's _FunctionScope).
-type dupScope struct {
-	start, end   int
-	names        map[string]bool
-	placeholders map[string]string
-}
-
 // placeholderFor returns the scope's placeholder for name, assigned in
 // first-use order: renamed clones of the same algorithm hash identically,
 // while two locals swapped against each other keep different placeholders
@@ -627,33 +651,10 @@ func dupTotalLines(content []byte) int {
 	return n
 }
 
-// dupPos is a token window's position inside the scan's file list.
-type dupPos struct {
-	file  int
-	token int
-}
-
-// dupOcc is one occurrence of a clone group: the token range [start, end)
-// of one file.
-type dupOcc struct {
-	file  int
-	start int
-	end   int
-}
-
-// dupGroup is one candidate clone group: occurrences of the same token
-// block, each spanning the same token count.
-type dupGroup struct {
-	occurrences []dupOcc
-}
-
 // tokenCount is the token count shared by every occurrence.
 func (g *dupGroup) tokenCount() int {
 	return g.occurrences[0].end - g.occurrences[0].start
 }
-
-// dupHashBase is the Rabin-Karp rolling base (upstream's 2^64/φ constant).
-const dupHashBase = 0x9e3779b97f4a7c15
 
 // detectDupGroups detects duplicated blocks, marks the involved tokens and
 // returns the accepted clone groups (longest first, non-overlapping — the

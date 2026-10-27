@@ -8,6 +8,8 @@
 //   - Compute: CC = 4   (base + for + if + &&)
 package sample
 
+type Calc struct{}
+
 func Add(a, b int) int { // line 11
 	return a + b
 }
@@ -29,8 +31,6 @@ func Grade(score int) string { // line 22
 		return "C"
 	}
 }
-
-type Calc struct{}
 
 func (c *Calc) Compute(n int) int { // line 35
 	sum := 0

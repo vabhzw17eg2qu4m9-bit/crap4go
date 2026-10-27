@@ -75,6 +75,14 @@ type ignoreScope struct {
 	ids     map[string]bool
 }
 
+// ignoreChecker resolves marker lookups for one gate run, caching each
+// file's lines so a violation-heavy gate reads it once. Unreadable and
+// empty files cache nil and are never suppressed.
+type ignoreChecker struct {
+	root  string
+	lines map[string][]string
+}
+
 func (s ignoreScope) matches(gateID string) bool {
 	return s.blanket || s.ids[gateID]
 }
@@ -129,14 +137,6 @@ func filterIgnored[T ignoreAware](gateID, root string, violations []T) []T {
 		}
 	}
 	return kept
-}
-
-// ignoreChecker resolves marker lookups for one gate run, caching each
-// file's lines so a violation-heavy gate reads it once. Unreadable and
-// empty files cache nil and are never suppressed.
-type ignoreChecker struct {
-	root  string
-	lines map[string][]string
 }
 
 // line returns the 1-indexed source line, or ok=false past EOF or for an

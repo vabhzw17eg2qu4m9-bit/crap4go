@@ -15,9 +15,18 @@ type UnusedCodeViolation struct {
 	Message string
 }
 
+// unusedDecl is one unexported package-level declaration site.
+type unusedDecl struct {
+	path   string
+	pkgDir string
+	line   int
+	name   string
+}
+
 // ignorePath/ignoreLine expose the location to the shared ignore filter.
 func (v UnusedCodeViolation) ignorePath() string { return v.Path }
-func (v UnusedCodeViolation) ignoreLine() int    { return v.Line }
+
+func (v UnusedCodeViolation) ignoreLine() int { return v.Line }
 
 // RunUnusedCodeCommand implements `crap4go unused-code [paths...]`: it flags
 // unexported package-level declarations (funcs, types, vars, consts) whose
@@ -50,14 +59,6 @@ func RunUnusedCodeCommand(args []string, root string, stdout, stderr io.Writer) 
 	}
 	fmt.Fprintf(stdout, "%d unexported declarations used\n", checked)
 	return 0
-}
-
-// unusedDecl is one unexported package-level declaration site.
-type unusedDecl struct {
-	path   string
-	pkgDir string
-	line   int
-	name   string
 }
 
 // CheckUnusedCode groups the files by package directory and returns the
