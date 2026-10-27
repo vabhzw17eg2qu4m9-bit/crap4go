@@ -18,6 +18,11 @@ type UnusedFilesViolation struct {
 	Message string
 }
 
+// ignorePath exposes the location to the shared ignore filter; unused-files
+// violations carry no line, so only file-scoped markers suppress them.
+func (v UnusedFilesViolation) ignorePath() string { return v.Path }
+func (v UnusedFilesViolation) ignoreLine() int    { return 0 }
+
 // RunUnusedFilesCommand implements `crap4go unused-files [paths...]`. Go
 // adaptation of crap4dart's UnusedFilesGate: it flags non-main packages in
 // the module that are never imported by any other analyzed package (main
@@ -40,6 +45,7 @@ func RunUnusedFilesCommand(args []string, root string, stdout, stderr io.Writer)
 		return 0
 	}
 	violations, checked := CheckUnusedFiles(files, root, modulePath(root))
+	violations = filterIgnored("unused-files", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationTextFormat, v.Path, v.Message)
 	}

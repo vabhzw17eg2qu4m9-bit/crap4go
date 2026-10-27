@@ -28,6 +28,10 @@ type BannedImportViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v BannedImportViolation) ignorePath() string { return v.Path }
+func (v BannedImportViolation) ignoreLine() int    { return v.Line }
+
 // RunBannedImportsCommand implements `crap4go banned-imports
 // [--from GLOB --forbid GLOB --message MSG]... [paths...]`: rules are
 // from/forbid pairs zipped by CLI order; --message is optional per rule.
@@ -51,6 +55,7 @@ func RunBannedImportsCommand(args []string, root string, stdout, stderr io.Write
 		return 0
 	}
 	violations, checked := CheckBannedImports(files, root, rules)
+	violations = filterIgnored("banned-imports", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

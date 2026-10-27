@@ -35,6 +35,10 @@ type TestAssertionViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v TestAssertionViolation) ignorePath() string { return v.Path }
+func (v TestAssertionViolation) ignoreLine() int    { return v.Line }
+
 // RunTestAssertionsCommand implements `crap4go test-assertions [paths...]`:
 // it flags Test* functions in *_test.go files whose bodies contain neither
 // a fail-capable *testing.T method call nor a panic() call — a test without
@@ -51,6 +55,7 @@ func RunTestAssertionsCommand(args []string, root string, stdout, stderr io.Writ
 		return 0
 	}
 	violations, checked := CheckTestAssertions(files, root)
+	violations = filterIgnored("test-assertions", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

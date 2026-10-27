@@ -22,6 +22,10 @@ type WeightViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v WeightViolation) ignorePath() string { return v.Path }
+func (v WeightViolation) ignoreLine() int    { return v.Line }
+
 // RunWeightOfClassCommand implements `crap4go weight-of-class [paths...]`:
 // it flags exported named struct types whose ratio of exported fields to
 // exported members exceeds maxWeight, prints one line per violation plus a
@@ -37,6 +41,7 @@ func RunWeightOfClassCommand(args []string, root string, stdout, stderr io.Write
 		return 0
 	}
 	violations, checked := CheckWeightOfClass(files, root)
+	violations = filterIgnored("weight-of-class", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

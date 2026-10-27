@@ -55,6 +55,10 @@ type DuplicationViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v DuplicationViolation) ignorePath() string { return v.Path }
+func (v DuplicationViolation) ignoreLine() int    { return v.Line }
+
 // duplicationResult aggregates the scan: violations, the number of
 // tokenized files, the duplicated-line percentage across all of them and
 // the one-line summary the command prints.
@@ -129,6 +133,7 @@ func RunDuplicatesCommand(args []string, root string, stdout, stderr io.Writer) 
 		fmt.Fprintln(stdout, "no files with enough tokens")
 		return 0
 	}
+	result.violations = filterIgnored("duplicates", root, result.violations)
 	for _, v := range result.violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

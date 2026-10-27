@@ -25,6 +25,10 @@ type ComplexityViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v ComplexityViolation) ignorePath() string { return v.Path }
+func (v ComplexityViolation) ignoreLine() int    { return v.Line }
+
 // RunComplexityCommand implements `crap4go complexity [--metric M] [--max N]
 // [--count-lambdas=false] [paths...]`: it flags functions whose complexity —
 // cyclomatic (default) or cognitive — exceeds --max, prints one line per
@@ -45,6 +49,7 @@ func RunComplexityCommand(args []string, root string, stdout, stderr io.Writer) 
 		return 0
 	}
 	violations, checked := CheckComplexity(files, root, metric, max, lambdas)
+	violations = filterIgnored("complexity", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

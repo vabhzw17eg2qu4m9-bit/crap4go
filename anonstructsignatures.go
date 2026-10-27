@@ -21,6 +21,10 @@ type AnonStructViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v AnonStructViolation) ignorePath() string { return v.Path }
+func (v AnonStructViolation) ignoreLine() int    { return v.Line }
+
 // anonStructOptions holds the parsed `anon-struct-signatures` subcommand
 // configuration.
 type anonStructOptions struct {
@@ -53,6 +57,7 @@ func RunAnonStructSignaturesCommand(args []string, root string, stdout, stderr i
 		return 0
 	}
 	violations, checked := CheckAnonStructSignatures(files, root, opts.maxFields)
+	violations = filterIgnored("anon-struct-signatures", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

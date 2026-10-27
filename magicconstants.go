@@ -26,6 +26,10 @@ type MagicConstantsViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v MagicConstantsViolation) ignorePath() string { return v.Path }
+func (v MagicConstantsViolation) ignoreLine() int    { return v.Line }
+
 // RunMagicConstantsCommand implements `crap4go magic-constants [paths...]`:
 // it flags hex color integer literals outside const declarations and
 // numeric/string literals repeating at least minLiteralRepeats times in one
@@ -42,6 +46,7 @@ func RunMagicConstantsCommand(args []string, root string, stdout, stderr io.Writ
 		return 0
 	}
 	violations, checked := CheckMagicConstants(files, root)
+	violations = filterIgnored("magic-constants", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

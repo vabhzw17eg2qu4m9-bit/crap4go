@@ -23,6 +23,10 @@ type ClassSizeViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v ClassSizeViolation) ignorePath() string { return v.Path }
+func (v ClassSizeViolation) ignoreLine() int    { return v.Line }
+
 // RunClassSizeCommand implements `crap4go class-size [paths...]`: it flags
 // named types with more than maxClassMethods methods or a weighted-methods
 // sum (total cyclomatic complexity over the type's methods) above maxWmc,
@@ -39,6 +43,7 @@ func RunClassSizeCommand(args []string, root string, stdout, stderr io.Writer) i
 		return 0
 	}
 	violations, checked := CheckClassSize(files, root)
+	violations = filterIgnored("class-size", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

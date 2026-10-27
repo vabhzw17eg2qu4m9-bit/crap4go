@@ -47,6 +47,11 @@ type FileViolation struct {
 	Message string
 }
 
+// ignorePath exposes the location to the shared ignore filter; file-naming
+// violations carry no line, so only file-scoped markers suppress them.
+func (v FileViolation) ignorePath() string { return v.Path }
+func (v FileViolation) ignoreLine() int    { return 0 }
+
 // violationForStem returns the violation message for a Go file stem (name
 // without the ".go" extension), or "" when the name is acceptable. Generic
 // stems always violate; otherwise a numeric suffix violates unless the whole
@@ -94,6 +99,7 @@ func RunFileNamingCommand(args []string, root string, stdout, stderr io.Writer) 
 		return 0
 	}
 	violations, checked := CheckFileNaming(files, root)
+	violations = filterIgnored("file-naming", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationTextFormat, v.Path, v.Message)
 	}
