@@ -34,6 +34,10 @@ type ScatteredConstantsViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v ScatteredConstantsViolation) ignorePath() string { return v.Path }
+func (v ScatteredConstantsViolation) ignoreLine() int    { return v.Line }
+
 // NamedScatteredConstant is a named declaration in the corpus that every
 // hardcoded occurrence of the same value should reference.
 type NamedScatteredConstant struct {
@@ -79,6 +83,7 @@ func RunScatteredConstantsCommand(args []string, root string, stdout, stderr io.
 		return 0
 	}
 	violations, checked := CheckScatteredConstants(files, root, opts.minFiles, opts.minLength, opts.minValue, opts.flagAliases)
+	violations = filterIgnored("scattered-constants", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

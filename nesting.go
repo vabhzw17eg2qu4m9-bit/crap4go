@@ -18,6 +18,10 @@ type NestingViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v NestingViolation) ignorePath() string { return v.Path }
+func (v NestingViolation) ignoreLine() int    { return v.Line }
+
 // RunNestingCommand implements `crap4go nesting [paths...]`: it flags
 // functions whose maximum block nesting exceeds maxNesting, prints one line
 // per violation plus a summary, and returns exit code 2 iff there are
@@ -33,6 +37,7 @@ func RunNestingCommand(args []string, root string, stdout, stderr io.Writer) int
 		return 0
 	}
 	violations, checked := CheckNesting(files, root)
+	violations = filterIgnored("nesting", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

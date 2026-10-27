@@ -393,6 +393,49 @@ then start line. `Cov%` and `CRAP` print with one decimal. The summary line
 prints the maximum numeric CRAP and the verdict against the configured
 threshold.
 
+## Ignore comments
+
+Gate subcommands drop violations suppressed by ignore comments (ported
+from crap4dart 8abb64c):
+
+- `// crap:ignore` — legacy blanket, line scope: suppresses every
+  ignorable gate's violation on its line (or the line above).
+- `// crap:ignore-file` — legacy blanket, file scope: anywhere in the
+  first 5 lines it suppresses every ignorable gate's violations in the
+  whole file.
+- `// ignore:<gate-id>` — granular, line scope: suppresses only that
+  gate's violation on its own line (trailing marker counts) or on the
+  code line that ends a run of whole-line ignore comments directly
+  above it.
+- `// ignore-file:<gate-id>` — granular, file scope: first 5 lines,
+  same per-gate semantics.
+
+Dart-lint style: one rule per marker — several rules stack as several
+markers, and several markers on one line union their ids. An empty id
+(`// ignore:`) is blanket again. Comma lists are not lists:
+`// ignore:a,b` names one unknown id and matches nothing, like any
+unknown id.
+
+Suppression is opt-in per gate. crap4go has no config file, so the
+opt-in is the hard-coded registry in `ignorefilter.go` (the host
+adaptation of upstream's `ignorable: true` config flag): the 11 gates
+whose violations carry `file:line` — `complexity`, `nesting`,
+`class-size`, `weight-of-class`, `unused-code`, `magic-constants`,
+`test-assertions`, `scattered-constants`, `duplicates`,
+`banned-imports`, `anon-struct-signatures` — honor line and file
+markers; `file-naming` and `unused-files` (line-less violations) honor
+file markers only. Not ignorable: `folder-structure` (violates
+directories — no lines to read), `similarity` (a suppressed file is
+still named by its cluster peers), `mutation` (count-bearing score
+aggregates would desync from the printed list), and the informational
+`memory`/`profile`.
+
+Dogfood: memory's `--badge-threshold` default `500` — the accepted
+scattered-constants residue (a coincidence with mutation's
+`defaultMutationMaxMutants`) — carries a trailing
+`// ignore:scattered-constants`, so the documented exception is
+enforced by the gate instead of living in prose alone.
+
 ## Exit codes
 
 | Code | Meaning                                                                   |
@@ -434,7 +477,7 @@ bash scripts/badge.sh coverage <pct>% <color> badges/coverage.svg
 crap4go/
   go.mod          main.go        crap.go        complexity.go
   parser.go       coverage.go    analyzer.go    report.go
-  files.go        runtests.go    cli.go
+  files.go        runtests.go    cli.go         ignorefilter.go
   profile.go      profile_collector.go   filenaming.go   skill.go
   magicconstants.go   testassertions.go   folderstructure.go
   *_test.go       testdata/

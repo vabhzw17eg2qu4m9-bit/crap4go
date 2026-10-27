@@ -15,6 +15,10 @@ type UnusedCodeViolation struct {
 	Message string
 }
 
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v UnusedCodeViolation) ignorePath() string { return v.Path }
+func (v UnusedCodeViolation) ignoreLine() int    { return v.Line }
+
 // RunUnusedCodeCommand implements `crap4go unused-code [paths...]`: it flags
 // unexported package-level declarations (funcs, types, vars, consts) whose
 // identifier never appears elsewhere in the same package. References are
@@ -36,6 +40,7 @@ func RunUnusedCodeCommand(args []string, root string, stdout, stderr io.Writer) 
 		return 0
 	}
 	violations, checked := CheckUnusedCode(files, root)
+	violations = filterIgnored("unused-code", root, violations)
 	for _, v := range violations {
 		fmt.Fprintf(stdout, violationLocationFormat, v.Path, v.Line, v.Message)
 	}

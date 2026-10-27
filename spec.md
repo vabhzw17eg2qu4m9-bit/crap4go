@@ -932,9 +932,11 @@ printed to stderr and the process exits 1.
 - No HTML/branch coverage reports — only the statement-level cover profile.
 - No automatic fixing or refactoring of high-CRAP code.
 - No external runtime dependencies (standard library only); no `go.sum`.
-- No config file or gate framework; no gate severity/ignorable/entries/
-  baseline (crap4dart 0.5.0 framework features) — gates are standalone
-  subcommands with hard-coded upstream defaults; no profile
+- No config file or gate framework; no gate severity/entries/baseline
+  (crap4dart 0.5.0 framework features) — gates are standalone
+  subcommands with hard-coded upstream defaults. The one framework flag
+  this port does carry — per-gate `ignorable` — is likewise hard-coded
+  (§32), not config; no profile
   `--tags`/`--exclude-tags` (no tag concept in `go test`) — all knobs are
   CLI flags.
 
@@ -1283,3 +1285,87 @@ pre-existed on main, and the codebase holds no pure value aliases to
 inline). `vendor` consolidated into `vendorDirName` (files.go's shared
 file vocabulary, referenced by all three walkers). After: 1 finding —
 the documented 500 remainder.
+
+## 32. Ignore comments
+
+Ported from crap4dart 8abb64c (`ignore comments: gate-specific
+granularity`, #21) together with the legacy blanket system it extends.
+Every gate subcommand (§10–§31) drops suppressed violations from its
+output and exit-code aggregation through one shared filter
+(`ignorefilter.go`) — no per-gate copies.
+
+```
+// crap:ignore             legacy blanket, line scope
+// crap:ignore-file        legacy blanket, file scope (first 5 lines)
+// ignore:<gate-id>        granular, line scope
+// ignore-file:<gate-id>   granular, file scope (first 5 lines)
+```
+
+Semantics (upstream-verbatim; `<gate-id>` is this port's subcommand
+name — `magic-constants`, not `magic_constants`):
+
+- **One rule per marker, Dart lint style.** Each granular marker names
+  exactly one gate; several rules stack as several markers, and several
+  markers on one line union their id sets (the id ends at whitespace or
+  the next comment start — regexes `//\s*ignore:([^\s/]*)` and
+  `//\s*ignore-file:([^\s/]*)`).
+- **Empty id is blanket.** `// ignore:` and `// ignore-file:` suppress
+  every ignorable gate, matching the legacy markers' scope.
+- **Comma lists are inert.** `// ignore:a,b` captures one id `a,b`,
+  which is simply unknown — it matches nothing, like any unknown id
+  (`// ignore:typo`). Unknown ids never error.
+- **Line scope** covers the violation's own line (a trailing marker
+  counts) and the code line that ends a run of whole-line ignore
+  comments directly above it — stacked `// ignore: a` / `// ignore: b`
+  lines all apply; the walk stops at the first non-marker line. A line
+  is a whole-line marker iff its trimmed form starts with `// ignore:`
+  or `// ignore-file:`. Legacy `// crap:ignore` suppresses wherever it
+  appears in that window.
+- **File scope** reads only the first 5 lines. The legacy blanket is
+  the literal `crap:ignore-file`; a line-scoped `// crap:ignore` in the
+  leading lines grants no file scope. Violations without a line number
+  respond to file markers only.
+- **Opt-in per gate.** Upstream gates carry `ignorable: true` in the
+  YAML config, default off. This port has no config file (§28), so the
+  opt-in is the hard-coded `ignorableGates` registry. Unreadable or
+  empty files are never suppressed.
+
+**Ignorable mapping.** The 11 line-anchored gates — `complexity`,
+`nesting`, `class-size`, `weight-of-class`, `unused-code`,
+`magic-constants`, `test-assertions`, `scattered-constants`,
+`duplicates`, `banned-imports`, `anon-struct-signatures` — honor line
+and file markers. `file-naming` and `unused-files` violations carry no
+line, so they respond to file markers only (their upstream
+counterparts are ignorable-capable the same way). Not ignorable, with
+reasons: `folder-structure` violates directories — no readable lines,
+so no marker can ever name one (upstream's flag table admits it too,
+to the same null effect); `similarity` reports clusters — a suppressed
+file is still named by its peers' counterpart messages; `mutation`
+prints count-bearing score/summary aggregates that filtering would
+desync from the printed list; `memory`/`profile` are informational and
+never fail. The `duplicates` summary line keeps its pre-filter count
+(upstream likewise passes `summary` through untouched).
+
+Killing tests (ignorefilter_test.go): `granular_marker_silences_only_
+its_gate` — the three-violation-line shape, `var dead = 0xFF00AA`
+violating magic-constants (hex outside const), unused-code (dead
+unexported var) and scattered-constants (value already registered as
+`Brand`) on ONE line; `// ignore:magic-constants` silences exactly its
+rule, the other two still exit 2. `stacked_markers_above_apply_walk_
+stops` (two whole-line markers above both apply; a non-marker comment
+between stops the walk). `file_scope_first_five_lines` (separate
+markers union, empty-id blanket, line 5 counts, line 6 does not).
+`legacy_parity` (`// crap:ignore` trailing, `// crap:ignore-file`
+leading, and no file scope from a leading line marker).
+`comma_inert_unknown_noop`. `lineless_violations_file_scope_only`
+(file-naming: file marker suppresses, line marker cannot).
+`opt_in_registry` (a non-ignorable gate is never filtered, even by
+blanket markers; unreadable files stay flagged).
+
+Dogfooding: the memory `--badge-threshold` default `500` — §31's
+accepted residue (coincidence with `defaultMutationMaxMutants`, MB vs
+mutant count) — now carries a trailing
+`// ignore:scattered-constants` on memory.go's flag registration.
+Before: `memory.go:587: hardcoded 500 duplicates constant
+`defaultMutationMaxMutants``, exit 2. After: exit 0. The exception is
+enforced by the gate instead of prose.
