@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.23.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.22.0...v0.23.0) (2026-10-27)
+
+
+### Features
+
+* **gate:** ignore markers — blanket legacy + granular per-gate ([#54](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/54)) ([1cb6427](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/1cb6427780fc2e4f6ad791fb896790b8ea6ce743))
+
 ## [0.22.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.21.0...v0.22.0) (2026-10-27)
 
 
