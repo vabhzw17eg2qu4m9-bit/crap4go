@@ -9,11 +9,13 @@ import (
 	"strings"
 )
 
-// Shared file vocabulary: the Go test-file suffix and the mode for files
-// the tool writes (reports, patches, caches).
+// Shared file vocabulary: the Go test-file suffix, the mode for files
+// the tool writes (reports, patches, caches), and the standard Go
+// dependency tree every walker skips.
 const (
 	testFileSuffix   = "_test.go"
 	writableFilePerm = 0o644
+	vendorDirName    = "vendor"
 )
 
 // FindSourceFiles walks root recursively and returns the sorted list of .go
@@ -25,7 +27,7 @@ func FindSourceFiles(root string) ([]string, error) {
 			return err
 		}
 		if d.IsDir() {
-			if d.Name() == "vendor" {
+			if d.Name() == vendorDirName {
 				return filepath.SkipDir
 			}
 			return nil

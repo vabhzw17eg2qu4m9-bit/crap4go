@@ -46,9 +46,10 @@ crap4go anon-struct-signatures [--max-fields N] [paths...]
                                  Flag anonymous struct types in function
                                  signatures; exit 2
 crap4go scattered-constants [--min-files N] [--min-length N]
-                  [--min-value N] [paths...]
-                                 Flag literals repeated across distinct files
-                                 or duplicating a named const; exit 2
+                  [--min-value N] [--aliases] [paths...]
+                                 Flag literals repeated across distinct files,
+                                 duplicating a named const, or pure value
+                                 aliases; exit 2
 crap4go duplicates [--threshold N] [--min-tokens N] [--min-lines N]
                    [--report percentage|clones] [--exclude GLOB]...
                    [--source PATH]... [--ignore-locals] [--ignore-literals]
@@ -1155,11 +1156,11 @@ crap4go scattered-constants [--min-files N] [--min-length N] [--min-value N] [pa
 ```
 
 Go adaptation of crap4dart e766d68's `scattered_constants` gate
-(§11.13.1): the corpus-wide sibling of `magic-constants`. Where
-magic-constants counts in-file repeats only — a literal used once per
-file in K files is invisible to it — scattered-constants scans the whole
-selection, keys literal values semantically, and reports two finding
-kinds:
+(§11.13.1, extended by a314b485): the corpus-wide sibling of
+`magic-constants`. Where magic-constants counts in-file repeats only —
+a literal used once per file in K files is invisible to it —
+scattered-constants scans the whole selection, keys literal values
+semantically, and reports three finding kinds:
 
 - **Constant regression.** The corpus already declares a named constant
   for the value: every hardcoded re-introduction — a bare literal or a
@@ -1174,6 +1175,21 @@ kinds:
   repeat counting cannot see. The message carries the scope (files and
   occurrences), the extract-and-verify fix shape, and the verification
   clause: all occurrences must mean the same thing.
+- **Pure value alias** (from crap4dart a314b485's `aliases` rule). An
+  unexported const whose initializer is another constant's bare
+  identifier — `const kAlias = kBase` — adds a name without
+  information; reference the shared constant directly. Exported
+  declarations are exempt (re-export shims are a deliberate API shape),
+  the blank identifier is exempt (`const _ = kY` introduces no name to
+  lose), and computed initializers are never aliases. Go adaptation:
+  `true`, `false` and `iota` are Go's predeclared constant identifiers
+  — boolean literals and the enum machinery — so initializing from them
+  is computed, not aliasing (Dart parses those as literal AST nodes;
+  Go's grammar makes them identifiers); an iota-block continuation has
+  no initializer and nothing to alias. `--aliases` (default on)
+  switches the rule off with `--aliases=false`; the flag exists only on
+  this subcommand — every other gate's flag set rejects it, mirroring
+  upstream's strict unknown-key validation.
 
 **Registry (Go adaptation).** Upstream registers `const` declarations.
 Go's referencable named-value forms are top-level `const` (single or
@@ -1183,7 +1199,12 @@ across files: they count toward the scattered minimum but never anchor a
 reference. Computed initializers (`const s = a + "b"`) register nothing;
 their inner literals are ordinary sites. The registry obeys the same
 value filters as the sites — a below-threshold value registers nothing,
-because no site for it can ever exist to regress.
+because no site for it can ever exist to regress. Upstream a314b485 had
+to retrofit exactly this (its Dart corpus collector bypassed `minValue`
+and the decl-initializer path skipped the guards); this port's shared
+filter has enforced both since e766d68, and
+`corpus_honors_min_value` plus `decl_initializer_min_value_boundary`
+lock them.
 
 **Semantic comparison:** strings key by unquoted value; numbers key by
 value, so digit separators (`1_000`), bases (`0x3E8`) and float
@@ -1206,12 +1227,13 @@ registry and the counts entirely.
 Output: one line per violation —
 `<relative path>:<line>: hardcoded <value> duplicates constant `K`
 (<file>:<line>) — reference the constant instead of repeating the
-literal`, or `<relative path>:<line>: literal <value> repeats in N files
+literal`, `<relative path>:<line>: literal <value> repeats in N files
 (M occurrences) — extract a shared constant and reference it from every
-site; verify all occurrences mean the same thing first` — plus a
-summary. Exit code 2 iff there are violations, 0 on a clean or empty
-selection, 1 on usage errors (bad flags, `--min-files < 2`,
-`--min-length < 1`, `--min-value < 0`).
+site; verify all occurrences mean the same thing first`, or
+`<relative path>:<line>: alias `<name>` adds no information — reference
+`<target>` directly` — plus a summary. Exit code 2 iff there are
+violations, 0 on a clean or empty selection, 1 on usage errors (bad
+flags, `--min-files < 2`, `--min-length < 1`, `--min-value < 0`).
 
 Killing tests (scatteredconstants_test.go):
 `in-file_body_repeats_never_flag` in one and two files (the core
@@ -1225,8 +1247,20 @@ boundary — an `>=` off-by-one flips both),
 min-files wait, winner self-exemption, duplicate declarations caught),
 `first_declaration_wins_on_shared_values`,
 `digit_separators_and_number_bases_are_one_fact` (semantic comparison
-through the registry), and the exemption quartet (protocol positions,
-import paths, struct tags, small values across three files each).
+through the registry), the exemption quartet (protocol positions,
+import paths, struct tags, small values across three files each),
+`corpus_honors_min_value` (a small-int const cannot anchor regressions —
+dropping the minValue guard flags the two bare uses) and
+`decl_initializer_min_value_boundary` (const-decl initializers through
+the same guard: a below-threshold triple stays clean, an
+above-threshold triple is winner plus two regressions), plus the
+aliases set (a314b485): `private_alias_flagged` (top-level and
+function-local), the `alias_exemptions` quartet (exported shim,
+computed initializer, predeclared true/false/iota, blank identifier),
+`aliases_flag_off`, `parse_scattered_flags_aliases_default` (default
+on), and `run_scattered_constants_aliases_flag` (command wiring:
+default on, `--aliases=false` off, another gate's flag set rejects the
+flag).
 
 Dogfooding: the first run flagged 63 scattered literals — the
 copy-pasted gate-subcommand vocabulary (`"%s:%d: %s\n"`, `"%s: %s\n"`,
@@ -1241,3 +1275,11 @@ coincidence with mutation's `defaultMutationMaxMutants = 500` —
 different facts (MB vs mutant count) sharing a value, and the gate's
 verification clause puts that call with the human (upstream's
 self-config accepts the same class).
+
+The a314b485 port re-ran the dogfood with the aliases rule active: 4
+findings before (the 500 residue plus a new `vendor` scatter — 3 walk
+skip sites in files.go, testassertions.go and folderstructure.go; all
+pre-existed on main, and the codebase holds no pure value aliases to
+inline). `vendor` consolidated into `vendorDirName` (files.go's shared
+file vocabulary, referenced by all three walkers). After: 1 finding —
+the documented 500 remainder.

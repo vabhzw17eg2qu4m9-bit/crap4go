@@ -198,6 +198,81 @@ func f() float64 {
 }
 `
 
+// scatteredSmallConst declares a small int (exit-code class) — coincidence
+// by the minValue doctrine; it must not seed the corpus constant registry.
+const scatteredSmallConst = `package p
+
+const code = 7
+`
+
+// scatteredBigConst declares an above-threshold int — its const-decl
+// initializer hit goes through the same guards as use-site literals and
+// registers the corpus constant.
+const scatteredBigConst = `package p
+
+const code = 700
+`
+
+// scatteredPrivateAlias holds pure value aliases: private consts whose
+// initializer is another constant's bare identifier, top-level and
+// function-local (the upstream a314b485 'aliases' rule).
+const scatteredPrivateAlias = `package p
+
+const kBase = 800
+
+const kAlias = kBase
+
+func f() {
+	const kLocal = kBase
+	_ = kLocal
+}
+`
+
+// scatteredExportedAlias is an exported alias — re-export shims are a
+// deliberate API shape and stay exempt.
+const scatteredExportedAlias = `package p
+
+const kBase = 800
+
+const KAlias = kBase
+`
+
+// scatteredComputedAlias initializes through an expression — computed
+// initializers are not aliases.
+const scatteredComputedAlias = `package p
+
+const kA = 800
+
+const kB = 900
+
+const kSum = kA + kB
+`
+
+// scatteredPredeclaredAlias initializes from Go's predeclared constant
+// identifiers: true/false are Go's boolean literals and iota is the enum
+// machinery — computed, not aliases (Go adaptation). An iota-block
+// continuation has no initializer and nothing to alias.
+const scatteredPredeclaredAlias = `package p
+
+const debug = true
+
+const release = false
+
+const (
+	first = iota
+	second
+)
+`
+
+// scatteredBlankAlias discards a constant through the blank identifier —
+// it introduces no name, so there is no alias to flag.
+const scatteredBlankAlias = `package p
+
+const kBase = 800
+
+const _ = kBase
+`
+
 // writeScatteredCorpus writes named fixture files under root and returns
 // their paths in sorted order.
 func writeScatteredCorpus(t *testing.T, root string, files map[string]string) []string {
@@ -223,7 +298,7 @@ func checkScatteredSources(t *testing.T, files map[string]string, minFiles, want
 	t.Helper()
 	root := t.TempDir()
 	paths := writeScatteredCorpus(t, root, files)
-	violations, checked := CheckScatteredConstants(paths, root, minFiles, defaultScatteredMinLength, defaultScatteredMinValue)
+	violations, checked := CheckScatteredConstants(paths, root, minFiles, defaultScatteredMinLength, defaultScatteredMinValue, true)
 	if checked != wantChecked {
 		t.Fatalf("checked = %d, want %d", checked, wantChecked)
 	}
@@ -537,7 +612,7 @@ func f() string {
 		"b.go": twoBodyUses,
 		"c.go": twoBodyUses,
 	})
-	violations, checked := CheckScatteredConstants(paths, root, defaultScatteredMinFiles, defaultScatteredMinLength, defaultScatteredMinValue)
+	violations, checked := CheckScatteredConstants(paths, root, defaultScatteredMinFiles, defaultScatteredMinLength, defaultScatteredMinValue, true)
 	if checked != 3 {
 		t.Fatalf("checked = %d, want 3", checked)
 	}
@@ -588,7 +663,7 @@ func TestScatteredConstantsMinFilesFlag(t *testing.T) {
 		"a.go": scatteredBodyUse,
 		"b.go": scatteredBodyUse,
 	})
-	violations, _ := CheckScatteredConstants(paths, root, 2, defaultScatteredMinLength, defaultScatteredMinValue)
+	violations, _ := CheckScatteredConstants(paths, root, 2, defaultScatteredMinLength, defaultScatteredMinValue, true)
 	if len(violations) != 2 {
 		t.Fatalf("violations = %d, want 2 at --min-files 2", len(violations))
 	}
@@ -658,5 +733,136 @@ func TestRun_ScatteredConstantsMinFilesFlag(t *testing.T) {
 	}
 	if want := "2 scattered constant(s) in 2 files"; !strings.Contains(out.String(), want) {
 		t.Errorf("output missing %q:\n%s", want, out.String())
+	}
+}
+
+func TestScatteredConstantsCorpusHonorsMinValue(t *testing.T) {
+	// The small-int const must not seed the corpus (upstream a314b485 gate
+	// fix 1): bare uses of 7 in other files cannot regress against a
+	// coincidence. Dropping the minValue guard registers `code` and this
+	// fixture flags the two uses.
+	const smallUse = `package p
+
+func f() int { return 7 }
+`
+	got := checkScatteredSources(t, map[string]string{
+		"a.go": scatteredSmallConst,
+		"b.go": smallUse,
+		"c.go": smallUse,
+	}, defaultScatteredMinFiles, 3)
+	if len(got) != 0 {
+		t.Errorf("violations = %v, want none — a small-int const is coincidence and must not anchor regressions", got)
+	}
+}
+
+func TestScatteredConstantsDeclInitializerMinValueBoundary(t *testing.T) {
+	// Const-decl initializer hits go through the same minValue guard as
+	// use-site literals (upstream a314b485 gate fix 2): below the
+	// threshold, three same-valued declarations are coincidence; above it,
+	// the first registers and the other two duplicate it.
+	below := checkScatteredSources(t, map[string]string{
+		"a.go": scatteredSmallConst,
+		"b.go": scatteredSmallConst,
+		"c.go": scatteredSmallConst,
+	}, defaultScatteredMinFiles, 3)
+	if len(below) != 0 {
+		t.Errorf("violations = %v, want none below --min-value", below)
+	}
+	got := checkScatteredSources(t, map[string]string{
+		"a.go": scatteredBigConst,
+		"b.go": scatteredBigConst,
+		"c.go": scatteredBigConst,
+	}, defaultScatteredMinFiles, 3)
+	if len(got) != 2 {
+		t.Fatalf("violations = %v, want 2 regressions above --min-value", got)
+	}
+	for i, want := range []string{
+		"b.go:3:" + regression("700", "code", "a.go", 3),
+		"c.go:3:" + regression("700", "code", "a.go", 3),
+	} {
+		if got[i] != want {
+			t.Errorf("violation %d = %q, want %q", i, got[i], want)
+		}
+	}
+}
+
+func TestScatteredConstantsPrivateAliasFlagged(t *testing.T) {
+	// The upstream a314b485 'aliases' rule: a private const whose
+	// initializer is another constant's bare identifier adds no
+	// information — top-level and function-local declarations both flag.
+	got := checkScatteredSources(t, map[string]string{"a.go": scatteredPrivateAlias}, defaultScatteredMinFiles, 1)
+	if len(got) != 2 {
+		t.Fatalf("violations = %v, want 2 alias findings", got)
+	}
+	for i, want := range []string{
+		"a.go:5:alias `kAlias` adds no information — reference `kBase` directly",
+		"a.go:8:alias `kLocal` adds no information — reference `kBase` directly",
+	} {
+		if got[i] != want {
+			t.Errorf("violation %d = %q, want %q", i, got[i], want)
+		}
+	}
+}
+
+func TestScatteredConstantsAliasExemptions(t *testing.T) {
+	tests := []struct {
+		name  string
+		files map[string]string
+	}{
+		{"exported alias is a deliberate re-export shim", map[string]string{"a.go": scatteredExportedAlias}},
+		{"computed initializer is not an alias", map[string]string{"a.go": scatteredComputedAlias}},
+		{"predeclared true/false/iota are not aliases", map[string]string{"a.go": scatteredPredeclaredAlias}},
+		{"blank identifier introduces no name", map[string]string{"a.go": scatteredBlankAlias}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := checkScatteredSources(t, tt.files, defaultScatteredMinFiles, 1); len(got) != 0 {
+				t.Errorf("violations = %v, want none", got)
+			}
+		})
+	}
+}
+
+func TestScatteredConstantsAliasesFlagOff(t *testing.T) {
+	root := t.TempDir()
+	paths := writeScatteredCorpus(t, root, map[string]string{"a.go": scatteredPrivateAlias})
+	violations, _ := CheckScatteredConstants(paths, root, defaultScatteredMinFiles, defaultScatteredMinLength, defaultScatteredMinValue, false)
+	if len(violations) != 0 {
+		t.Errorf("violations = %v, want none with aliases off", violations)
+	}
+}
+
+func TestParseScatteredFlagsAliasesDefault(t *testing.T) {
+	opts, _, ok := parseScatteredFlags(nil, &bytes.Buffer{})
+	if !ok {
+		t.Fatal("parse failed")
+	}
+	if !opts.flagAliases {
+		t.Errorf("flagAliases = false, want default true")
+	}
+}
+
+func TestRun_ScatteredConstantsAliasesFlag(t *testing.T) {
+	root := t.TempDir()
+	writeScatteredCorpus(t, root, map[string]string{"a.go": scatteredPrivateAlias})
+	var out, errOut bytes.Buffer
+	if code := runWithRoot([]string{"scattered-constants"}, root, &out, &errOut); code != 2 {
+		t.Fatalf("exit = %d, want 2 — --aliases defaults on (stderr=%s)", code, errOut.String())
+	}
+	for _, want := range []string{
+		"a.go:5: alias `kAlias` adds no information — reference `kBase` directly",
+		"a.go:8: alias `kLocal` adds no information — reference `kBase` directly",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("output missing %q:\n%s", want, out.String())
+		}
+	}
+	out.Reset()
+	if code := runWithRoot([]string{"scattered-constants", "--aliases=false"}, root, &out, &errOut); code != 0 {
+		t.Fatalf("exit = %d, want 0 with --aliases=false (stderr=%s)", code, errOut.String())
+	}
+	// The knob exists only here: another gate's flag set rejects it.
+	if code := runWithRoot([]string{"duplicates", "--aliases=false"}, root, &bytes.Buffer{}, &bytes.Buffer{}); code != 1 {
+		t.Errorf("duplicates --aliases=false: exit = %d, want 1 (unknown flag)", code)
 	}
 }

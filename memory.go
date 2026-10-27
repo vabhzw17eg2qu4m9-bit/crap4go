@@ -580,6 +580,10 @@ func parseMemoryOptions(args []string, stderr io.Writer) (memoryOptions, int, bo
 	badge := fs.String("badge", "", "Write a shields-style SVG badge with the suite churn "+
 		"to this path (green at or below, yellow at most twice, red over "+
 		"the --badge-threshold MB).")
+	// 500 MB is a different fact from mutation's defaultMutationMaxMutants
+	// (a mutant count): cross-protocol coincidence by the
+	// scattered-constants gate's own verification clause, kept as a
+	// literal.
 	badgeThreshold := fs.Float64("badge-threshold", 500, "Badge green/yellow boundary in MB.")
 	if err := fs.Parse(args); err != nil {
 		return memoryOptions{}, 1, false

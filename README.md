@@ -80,7 +80,7 @@ crap4go test-assertions           # flag tests with no fail-capable calls (t.Err
 crap4go folder-structure           # flag dirs with loose .go files at the module root
 crap4go folder-structure --cap 'internal/*=3'   # per-pattern caps over glob-selected dirs
 crap4go anon-struct-signatures     # flag anonymous struct types in function signatures
-crap4go scattered-constants        # flag literals repeated across 3+ files or duplicating a named const
+crap4go scattered-constants        # flag literals repeated across 3+ files, duplicating a named const, or pure value aliases
 crap4go duplicates --source ../other-module/lib   # flag copy-pasted blocks across modules
 crap4go similarity --check --jaccard 0.6 --containment 0.9   # flag whole-file near-duplicates; exit 2
 crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on survivors
@@ -226,7 +226,13 @@ magnitude at or below `--min-value` (100), char/imaginary literals,
 import paths, struct tags (protocol wire vocabulary), identifier-position
 strings (map keys, index operands, case labels), and by default
 `*_test.go` files plus files carrying the `// Code generated ... DO NOT
-EDIT.` marker.
+EDIT.` marker. From crap4dart a314b485, a third kind — the **pure value
+alias**: an unexported const whose initializer is another constant's
+bare identifier (`const kAlias = kBase`) adds a name without
+information and is flagged to be inlined; exported declarations
+(re-export shims), the blank identifier, computed initializers and
+Go's predeclared constants (`true`/`false`/`iota`) stay exempt, and
+`--aliases=false` (default on) switches the rule off.
 
 `duplicates` (from 0.2.0, plus dc64e9c's
 per-gate `sources`) tokenizes every scanned file with `go/scanner`
