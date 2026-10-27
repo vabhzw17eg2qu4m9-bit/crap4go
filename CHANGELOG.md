@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.22.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.21.0...v0.22.0) (2026-10-27)
+
+
+### Features
+
+* **gate:** scattered-constants corpus guards + aliases rule + dogfood dedup (adapted from upstream a314b485) ([#52](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/52)) ([3df31c1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/3df31c139fa3ee747f01e423ab48051234b866aa))
+
 ## [0.21.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.20.0...v0.21.0) (2026-10-26)
 
 
