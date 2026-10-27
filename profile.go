@@ -26,14 +26,6 @@ type timingStats struct {
 	MaxMicros       int64 `json:"maxMicros"`
 }
 
-// MeanMicros returns the average time per call in microseconds.
-func (t timingStats) MeanMicros() float64 {
-	if t.Calls == 0 {
-		return 0
-	}
-	return float64(t.TotalMicros) / float64(t.Calls)
-}
-
 // methodProfile pairs an analyzed method with its timing aggregate and the
 // method's file path relative to the project root.
 type methodProfile struct {
@@ -48,6 +40,39 @@ type profileOptions struct {
 	thresholdMs float64
 	top         int
 	paths       []string
+}
+
+// funcInsertion is one instrumentation insertion at a byte offset.
+type funcInsertion struct {
+	offset int
+	text   string
+}
+
+// profileJSONReport is the JSON profile report document.
+type profileJSONReport struct {
+	GeneratedAt string              `json:"generatedAt"`
+	Methods     []profileJSONMethod `json:"methods"`
+}
+
+// profileJSONMethod is one method entry in the JSON profile report.
+type profileJSONMethod struct {
+	Method          string  `json:"method"`
+	File            string  `json:"file"`
+	Line            int     `json:"line"`
+	Calls           int64   `json:"calls"`
+	TotalMicros     int64   `json:"totalMicros"`
+	TotalSelfMicros int64   `json:"totalSelfMicros"`
+	MinMicros       int64   `json:"minMicros"`
+	MaxMicros       int64   `json:"maxMicros"`
+	MeanMicros      float64 `json:"meanMicros"`
+}
+
+// MeanMicros returns the average time per call in microseconds.
+func (t timingStats) MeanMicros() float64 {
+	if t.Calls == 0 {
+		return 0
+	}
+	return float64(t.TotalMicros) / float64(t.Calls)
 }
 
 // parseProfileOptions parses the profile subcommand flags: --name, --threshold
@@ -247,12 +272,6 @@ func instrumentSource(src []byte, relPath string) ([]byte, string, bool, error) 
 		return src, f.Name.Name, false, nil
 	}
 	return applyInsertions(src, insertions), f.Name.Name, true, nil
-}
-
-// funcInsertion is one instrumentation insertion at a byte offset.
-type funcInsertion struct {
-	offset int
-	text   string
 }
 
 // applyInsertions splices the insertions into src from last to first so
@@ -613,23 +632,4 @@ func writeProfileJSON(path string, profiles []methodProfile) error {
 		return err
 	}
 	return os.WriteFile(path, data, writableFilePerm)
-}
-
-// profileJSONReport is the JSON profile report document.
-type profileJSONReport struct {
-	GeneratedAt string              `json:"generatedAt"`
-	Methods     []profileJSONMethod `json:"methods"`
-}
-
-// profileJSONMethod is one method entry in the JSON profile report.
-type profileJSONMethod struct {
-	Method          string  `json:"method"`
-	File            string  `json:"file"`
-	Line            int     `json:"line"`
-	Calls           int64   `json:"calls"`
-	TotalMicros     int64   `json:"totalMicros"`
-	TotalSelfMicros int64   `json:"totalSelfMicros"`
-	MinMicros       int64   `json:"minMicros"`
-	MaxMicros       int64   `json:"maxMicros"`
-	MeanMicros      float64 `json:"meanMicros"`
 }

@@ -59,7 +59,8 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 
 ### Subcommands
 
-`profile`, `skill`, `memory`, and the gate subcommands (`file-naming`,
+`profile`, `skill`, `memory`, `reorder`, and the gate subcommands
+(`file-naming`,
 `nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
 `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
 `folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`) dispatch on the first
@@ -86,6 +87,7 @@ crap4go similarity --check --jaccard 0.6 --containment 0.9   # flag whole-file n
 crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on survivors
 crap4go memory --format json       # per-test GC/alloc churn report (informational, exit 0)
 crap4go memory --badge badges/memory.svg   # refresh the README churn badge (self-analyze)
+crap4go reorder --dry-run          # list files whose top-level decls are out of canonical order; exit 2
 crap4go skill                     # print the profiling skill for AI agents
 ```
 
@@ -338,6 +340,47 @@ when no candidate exists — a scoped kill is monotone and cached like any
 kill; a scoped survivor (timeouts included) is re-confirmed once against
 the full invocation and only the confirmed outcome is reported and
 cached (`test-scoped N (M re-confirmed killed)` in the summary).
+
+### Reordering source
+
+`reorder` (ported from crap4dart 24a6f24f, adapted to Go's file-level
+declaration model) rewrites files so top-level declarations follow the
+canonical Go order: **imports, consts, vars, types, funcs** — a stable
+partition, never an alphabetical sort: declarations of one category keep
+their original relative order. The transform is deterministic and
+idempotent: the same input always produces the same output,
+already-canonical files stay byte-identical whatever their layout, and
+reordering an already-reordered file changes nothing. Doc comments and
+whole-line comment blocks above a declaration move with it — including a
+block separated by a single blank line; two or more blank lines detach
+the block, and a detached block between declarations sticks to the
+preceding declaration so comments are never dropped — including
+multi-line `/* */` blocks (their tail lines are not whole-line
+comments, so nothing else claims them). A comment group
+starting on a declaration's line (a trailing same-line comment and its
+contiguous continuation lines) belongs to that declaration, and
+`//line` directives ride with the declaration they precede (the
+transform indexes raw, directive-unadjusted positions, so a directive
+cannot shift its line table). Grouped
+const/var/type blocks move whole — `iota` and struct-field order are
+semantics and are never touched — and because the partition preserves
+the relative order of functions, several `init()` functions in one file
+keep their execution order (Go initializes package-level vars by
+dependency order, not source order, so moving whole var declarations
+cannot change observable initialization). A file's line-ending style (LF
+or CRLF) is preserved. A rewritten LF file is additionally passed
+through gofmt's own printer (`go/format`) — reordering can create new
+adjacency groups of one-line declarations whose columnar alignment no
+longer matches — so the output is gofmt-clean by construction; CRLF
+files skip that pass (the printer emits LF only) and keep their
+endings; already-canonical files are never reformatted. With
+`--dry-run` (`-n`) nothing is written: the
+command lists the files that would change and exits 2 when at least one
+would (0 otherwise); without it, files are written and the command exits
+0. Files that fail to parse are skipped with a note, never fatal.
+Selection follows the standard rules (non-test, non-vendor `.go` files
+under the current directory unless paths are given; an explicit file
+path is honored verbatim, so `reorder foo_test.go` works).
 
 ### Flag ordering
 

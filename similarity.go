@@ -29,19 +29,6 @@ const (
 	defaultSimContainment = 0.95
 )
 
-var (
-	defaultSimInclude = []string{"**/*.md"}
-	// defaultSimExclude is the upstream list with .dart_tool replaced by
-	// vendor/** (the Go port's standard exclusion, as in duplicates).
-	defaultSimExclude = []string{".git/**", "build/**", "coverage/**", "node_modules/**", "vendor/**"}
-)
-
-// similarityProfile is a content profile: how a file's raw bytes become
-// comparable text. Profiles strip the noise that makes two unrelated
-// files look alike (imports, comments, markdown fences) so the remaining
-// signal is actual content.
-type similarityProfile int
-
 const (
 	// profileMarkdown: prose documents — fenced code blocks are dropped,
 	// only the prose words are compared.
@@ -51,6 +38,13 @@ const (
 	profileCode
 	// profileRaw: anything else — compared as-is.
 	profileRaw
+)
+
+var (
+	defaultSimInclude = []string{"**/*.md"}
+	// defaultSimExclude is the upstream list with .dart_tool replaced by
+	// vendor/** (the Go port's standard exclusion, as in duplicates).
+	defaultSimExclude = []string{".git/**", "build/**", "coverage/**", "node_modules/**", "vendor/**"}
 )
 
 var markdownExtensions = map[string]bool{".md": true, ".markdown": true, ".mdx": true}
@@ -66,6 +60,91 @@ var codeExtensions = map[string]bool{
 	".php": true, ".scala": true, ".gradle": true, ".groovy": true,
 	".sh": true, ".sql": true,
 }
+
+// Line-comment markers across the code extension family.
+var simLineComment = regexp.MustCompile(`^\s*(//|#|--|;)`)
+
+// Import-family directives across languages — boilerplate that would
+// otherwise make every file of a project look like every other.
+var simImportLines = []*regexp.Regexp{
+	regexp.MustCompile(`^\s*(import|export|part|part of|library)\b`),
+	regexp.MustCompile(`^\s*(from|require|require_once|using|package|include)\b`),
+	regexp.MustCompile(`^#!`),
+}
+
+// Word tokens for prose and raw content: letters/digits runs of 2+
+// characters (latin + cyrillic), lowercased.
+var simWordToken = regexp.MustCompile(`[0-9A-Za-zА-Яа-яЁё]{2,}`)
+
+// Code tokens: identifiers, numbers and quoted strings.
+var simCodeToken = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*"|\d+(\.\d+)?`)
+
+// simNumberStart marks number tokens (mapped to a placeholder for code).
+var simNumberStart = regexp.MustCompile(`^\d`)
+
+// similarityProfile is a content profile: how a file's raw bytes become
+// comparable text. Profiles strip the noise that makes two unrelated
+// files look alike (imports, comments, markdown fences) so the remaining
+// signal is actual content.
+type similarityProfile int
+
+// shingleSet is a set of shingle strings: the similarity scan's shared
+// shape, promoted to a named type so signatures reference a name instead
+// of the map[string]struct{} set idiom (an anonymous struct type in a
+// signature — see the anon-struct-signatures gate).
+type shingleSet map[string]struct{}
+
+// similarityFile is one analyzed file: its project-relative path and
+// shingle set.
+type similarityFile struct {
+	path     string
+	shingles shingleSet
+}
+
+// SimilarityPair is a pair of files whose similarity crosses at least
+// one threshold.
+type SimilarityPair struct {
+	A           string
+	B           string
+	Jaccard     float64
+	Containment float64
+}
+
+// SimilarityCluster is a connected group of similar files (transitively
+// merged pairs).
+type SimilarityCluster struct {
+	Files []string
+	Pairs []SimilarityPair
+}
+
+// SimilarityReport is the outcome of a similarity scan.
+type SimilarityReport struct {
+	// Scanned is the number of files read and analyzed.
+	Scanned int
+	// Skipped counts files skipped for carrying fewer shingles than the
+	// floor.
+	Skipped int
+	// Pairs are the threshold-crossing pairs, sorted by Jaccard
+	// descending.
+	Pairs []SimilarityPair
+	// Clusters are the groups of ≥ 2 files, largest first.
+	Clusters []SimilarityCluster
+}
+
+// similarityOptions holds the scan configuration (flag values of the
+// similarity subcommand; upstream gate config keys dirs/include/exclude/
+// min_shingles/jaccard/containment).
+type similarityOptions struct {
+	dirs        []string
+	include     []string
+	exclude     []string
+	jaccard     float64
+	containment float64
+	minShingles int
+}
+
+// simUnionFind is union-find over analyzed file paths.
+type simUnionFind map[string]string
 
 // similarityProfileFor is the profile for a file path (by extension),
 // profileRaw for unknown extensions.
@@ -97,17 +176,6 @@ func normalizeMarkdown(content string) string {
 		b.WriteByte(' ')
 	}
 	return b.String()
-}
-
-// Line-comment markers across the code extension family.
-var simLineComment = regexp.MustCompile(`^\s*(//|#|--|;)`)
-
-// Import-family directives across languages — boilerplate that would
-// otherwise make every file of a project look like every other.
-var simImportLines = []*regexp.Regexp{
-	regexp.MustCompile(`^\s*(import|export|part|part of|library)\b`),
-	regexp.MustCompile(`^\s*(from|require|require_once|using|package|include)\b`),
-	regexp.MustCompile(`^#!`),
 }
 
 // Source code (generic, non-Go): strips block/line comments and
@@ -176,16 +244,6 @@ func similarityNormalize(content string, profile similarityProfile) string {
 		return content
 	}
 }
-
-// Word tokens for prose and raw content: letters/digits runs of 2+
-// characters (latin + cyrillic), lowercased.
-var simWordToken = regexp.MustCompile(`[0-9A-Za-zА-Яа-яЁё]{2,}`)
-
-// Code tokens: identifiers, numbers and quoted strings.
-var simCodeToken = regexp.MustCompile(`[A-Za-z_][A-Za-z0-9_]*|'[^']*'|"[^"]*"|\d+(\.\d+)?`)
-
-// simNumberStart marks number tokens (mapped to a placeholder for code).
-var simNumberStart = regexp.MustCompile(`^\d`)
 
 // tokensFor splits content into comparison tokens according to profile.
 //
@@ -356,49 +414,6 @@ func containment(a, b shingleSet) float64 {
 	return float64(shared) / float64(min(len(a), len(b)))
 }
 
-// shingleSet is a set of shingle strings: the similarity scan's shared
-// shape, promoted to a named type so signatures reference a name instead
-// of the map[string]struct{} set idiom (an anonymous struct type in a
-// signature — see the anon-struct-signatures gate).
-type shingleSet map[string]struct{}
-
-// similarityFile is one analyzed file: its project-relative path and
-// shingle set.
-type similarityFile struct {
-	path     string
-	shingles shingleSet
-}
-
-// SimilarityPair is a pair of files whose similarity crosses at least
-// one threshold.
-type SimilarityPair struct {
-	A           string
-	B           string
-	Jaccard     float64
-	Containment float64
-}
-
-// SimilarityCluster is a connected group of similar files (transitively
-// merged pairs).
-type SimilarityCluster struct {
-	Files []string
-	Pairs []SimilarityPair
-}
-
-// SimilarityReport is the outcome of a similarity scan.
-type SimilarityReport struct {
-	// Scanned is the number of files read and analyzed.
-	Scanned int
-	// Skipped counts files skipped for carrying fewer shingles than the
-	// floor.
-	Skipped int
-	// Pairs are the threshold-crossing pairs, sorted by Jaccard
-	// descending.
-	Pairs []SimilarityPair
-	// Clusters are the groups of ≥ 2 files, largest first.
-	Clusters []SimilarityCluster
-}
-
 // Clean reports whether nothing crossed the thresholds.
 func (r SimilarityReport) Clean() bool { return len(r.Pairs) == 0 }
 
@@ -420,18 +435,6 @@ func (r SimilarityReport) MetricsFor(path string) (jaccard, containment float64,
 		}
 	}
 	return 0, 0, false
-}
-
-// similarityOptions holds the scan configuration (flag values of the
-// similarity subcommand; upstream gate config keys dirs/include/exclude/
-// min_shingles/jaccard/containment).
-type similarityOptions struct {
-	dirs        []string
-	include     []string
-	exclude     []string
-	jaccard     float64
-	containment float64
-	minShingles int
 }
 
 // analyzeSimilarity scans dirs (project-relative, recursive) under root,
@@ -528,9 +531,6 @@ func similarityPairs(files []similarityFile, jaccardThreshold, containmentThresh
 	sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].Jaccard > pairs[j].Jaccard })
 	return pairs
 }
-
-// simUnionFind is union-find over analyzed file paths.
-type simUnionFind map[string]string
 
 func (u simUnionFind) add(item string) { u[item] = item }
 

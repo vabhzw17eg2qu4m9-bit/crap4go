@@ -16,14 +16,14 @@ import (
 // directly in one directory (ported from crap4dart's folder_structure gate).
 const maxLooseFiles = 0
 
+// generatedPrefix marks wholly generated files (zz_generated.deepcopy.go and
+// friends): every such file in a directory collapses into one unit.
+const generatedPrefix = "zz_generated"
+
 // generatedSuffixes are stripped from a file name (after .go, repeatedly) to
 // find its logical stem — the Go generated-sibling set: protobuf (.pb.go,
 // .pb.gw.go) and stringer (_string.go) output shares its source file's unit.
 var generatedSuffixes = [...]string{".pb.gw", ".pb", "_string"}
-
-// generatedPrefix marks wholly generated files (zz_generated.deepcopy.go and
-// friends): every such file in a directory collapses into one unit.
-const generatedPrefix = "zz_generated"
 
 // folderCap is one --cap PATTERN=N entry: a directory pattern with its own
 // cap (the CLI form of crap4dart's folder_structure `config` map).
@@ -42,6 +42,12 @@ type folderCheck struct {
 type FolderStructureViolation struct {
 	Dir     string
 	Message string
+}
+
+// capSlice is a repeatable --cap PATTERN=N flag value preserving CLI order
+// (order decides which pattern wins on overlap).
+type capSlice struct {
+	caps []folderCap
 }
 
 // RunFolderStructureCommand implements `crap4go folder-structure
@@ -105,12 +111,6 @@ func parseFolderFlags(args []string, stderr io.Writer) (caps []folderCap, maxLoo
 		return nil, 0, nil, nil, 1
 	}
 	return capList.caps, maxLoose, excl.slice(), flags.Args(), 0
-}
-
-// capSlice is a repeatable --cap PATTERN=N flag value preserving CLI order
-// (order decides which pattern wins on overlap).
-type capSlice struct {
-	caps []folderCap
 }
 
 func (c *capSlice) String() string {

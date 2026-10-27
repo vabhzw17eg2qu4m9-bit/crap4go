@@ -11,6 +11,10 @@ import (
 	"sync"
 )
 
+// globRegexes caches compiled glob patterns once per pattern instead of once
+// per matched file (ported from crap4dart 0.8.6).
+var globRegexes sync.Map // pattern -> *regexp.Regexp (nil when invalid)
+
 // ImportRule is one architectural boundary from crap4dart's
 // BannedImportsGate: every file matching From must not import any path
 // matching Forbid (raw import path or resolved project-relative path).
@@ -28,9 +32,15 @@ type BannedImportViolation struct {
 	Message string
 }
 
+// stringSlice is a repeatable string flag value.
+type stringSlice struct {
+	values []string
+}
+
 // ignorePath/ignoreLine expose the location to the shared ignore filter.
 func (v BannedImportViolation) ignorePath() string { return v.Path }
-func (v BannedImportViolation) ignoreLine() int    { return v.Line }
+
+func (v BannedImportViolation) ignoreLine() int { return v.Line }
 
 // RunBannedImportsCommand implements `crap4go banned-imports
 // [--from GLOB --forbid GLOB --message MSG]... [paths...]`: rules are
@@ -110,11 +120,6 @@ func zipRules(from, forbid, message []string) ([]ImportRule, error) {
 	return rules, nil
 }
 
-// stringSlice is a repeatable string flag value.
-type stringSlice struct {
-	values []string
-}
-
 func (s *stringSlice) String() string { return strings.Join(s.values, ",") }
 
 func (s *stringSlice) Set(v string) error {
@@ -191,10 +196,6 @@ func importMatches(forbid, path, module string) bool {
 	resolved := resolveImportDir(path, module)
 	return resolved != "" && globMatch(forbid, resolved)
 }
-
-// globRegexes caches compiled glob patterns once per pattern instead of once
-// per matched file (ported from crap4dart 0.8.6).
-var globRegexes sync.Map // pattern -> *regexp.Regexp (nil when invalid)
 
 // globMatch reports whether name matches a glob pattern supporting '*', '?'
 // and '**' (matching across path separators).

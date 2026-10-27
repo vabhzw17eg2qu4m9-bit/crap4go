@@ -25,20 +25,17 @@ const (
 	defaultMutationMaxMutants     = 500
 )
 
+const (
+	mutantKilled mutantOutcome = iota
+	mutantSurvived
+	mutantTimeout
+)
+
 // defaultMutationTestArgs is the full per-mutant test invocation: the whole
 // suite, like upstream's ['test']. Scoping it to relevant test paths is the
 // consumer's responsibility: a mutant is killed only if the scoped suite
 // would kill it.
 var defaultMutationTestArgs = []string{goTestSubcommand, goTestAllPackages}
-
-// mutationOperator is one row of the declarative operator table: replacing
-// original with mutant produces one mutant, tagged category. Adapted from the
-// unclebob/mutator research conclusions.
-type mutationOperator struct {
-	category string
-	original string
-	mutant   string
-}
 
 // mutationOperatorCategories lists the operator categories in stable order;
 // the `operators` flag accepts any subset of these names.
@@ -75,6 +72,15 @@ var mutationOperators = []mutationOperator{
 	{category: "constant", original: "1", mutant: "0"},
 }
 
+// mutationOperator is one row of the declarative operator table: replacing
+// original with mutant produces one mutant, tagged category. Adapted from the
+// unclebob/mutator research conclusions.
+type mutationOperator struct {
+	category string
+	original string
+	mutant   string
+}
+
 // MutationSite is one place in a source file where an operator replacement
 // applies. Offset and Length come from go/token positions of the parsed
 // (unresolved) AST — never from regex.
@@ -87,6 +93,77 @@ type MutationSite struct {
 	Mutant   string
 	Offset   int
 	Length   int
+}
+
+// mutationDetector collects mutation sites for one parsed file. Only
+// executable code is walked: declaration positions (field names, labels,
+// type names) can never be expression-position `true`/`false`/`0`/`1`, so
+// struct fields, labels and selectors are naturally excluded.
+type mutationDetector struct {
+	tf         *token.File
+	path       string
+	methods    []MethodDescriptor
+	categories map[string]bool
+	sites      []MutationSite
+}
+
+// mutantOutcome classifies one per-mutant test re-run (ported from
+// crap4dart's MutantOutcome).
+type mutantOutcome int
+
+// mutationSiteOutcome pairs a site with its per-mutant outcome, and
+// whether the kill was replayed from the cache instead of executed.
+type mutationSiteOutcome struct {
+	site      MutationSite
+	outcome   mutantOutcome
+	fromCache bool
+}
+
+// mutationRunResult holds every per-site outcome of one engine invocation.
+// integrityViolations lists files that did NOT match their pre-run
+// snapshot after the loop and had to be re-restored by the end-of-run
+// integrity check — the tree is healed, but the run must be treated as
+// suspect. scopedCount counts sites whose first (scoped) run did not kill
+// the mutant and that were re-confirmed against the full invocation;
+// confirmedCount counts those confirmations that killed the mutant.
+type mutationRunResult struct {
+	outcomes            []mutationSiteOutcome
+	integrityViolations []string
+	scopedCount         int
+	confirmedCount      int
+}
+
+// mutantTestRunner runs the project's test suite against the currently
+// mutated tree; the invocation arguments are resolved per site by the
+// engine (test scoping) and passed to every call. Inject a fake in tests
+// instead of running real suites.
+type mutantTestRunner func(projectRoot string, timeout time.Duration, testArgs []string) (mutantOutcome, error)
+
+// mutationOptions holds the parsed `mutation` subcommand configuration.
+type mutationOptions struct {
+	coveragePath   string
+	minScore       float64
+	maxSurvivors   int
+	timeoutSeconds int
+	maxMutants     int
+	operators      []string
+	excludes       []string
+	paths          []string
+	cache          bool
+	testArgs       []string
+	diffBase       string
+	scopeTests     bool
+}
+
+// mutationScan is the result of scanning the scope for covered mutation
+// sites, plus the cache identities needed for digest-incremental replay:
+// every covered site's containing-method identity and every scanned
+// method's live key.
+type mutationScan struct {
+	sites       []MutationSite
+	uncovered   int
+	siteMethods map[MutationSite]mutationMethodRef
+	liveKeys    map[string]bool
 }
 
 // applyTo returns src with this site's span replaced by the mutant lexeme.
@@ -102,18 +179,6 @@ func (s MutationSite) applyTo(src []byte) []byte {
 // `main.go:12: + -> - (arithmetic)`.
 func (s MutationSite) String() string {
 	return fmt.Sprintf("%s:%d: %s -> %s (%s)", s.File, s.Line, s.Original, s.Mutant, s.Category)
-}
-
-// mutationDetector collects mutation sites for one parsed file. Only
-// executable code is walked: declaration positions (field names, labels,
-// type names) can never be expression-position `true`/`false`/`0`/`1`, so
-// struct fields, labels and selectors are naturally excluded.
-type mutationDetector struct {
-	tf         *token.File
-	path       string
-	methods    []MethodDescriptor
-	categories map[string]bool
-	sites      []MutationSite
 }
 
 // detectMutationSites parses nothing itself: it walks the already-parsed file
@@ -402,16 +467,6 @@ func mutationMethodAt(methods []MethodDescriptor, line int) *MethodDescriptor {
 	return nil
 }
 
-// mutantOutcome classifies one per-mutant test re-run (ported from
-// crap4dart's MutantOutcome).
-type mutantOutcome int
-
-const (
-	mutantKilled mutantOutcome = iota
-	mutantSurvived
-	mutantTimeout
-)
-
 // cacheStatus is the outcome's name in the mutation cache.
 func (o mutantOutcome) cacheStatus() string {
 	switch o {
@@ -422,28 +477,6 @@ func (o mutantOutcome) cacheStatus() string {
 	default:
 		return "timeout"
 	}
-}
-
-// mutationSiteOutcome pairs a site with its per-mutant outcome, and
-// whether the kill was replayed from the cache instead of executed.
-type mutationSiteOutcome struct {
-	site      MutationSite
-	outcome   mutantOutcome
-	fromCache bool
-}
-
-// mutationRunResult holds every per-site outcome of one engine invocation.
-// integrityViolations lists files that did NOT match their pre-run
-// snapshot after the loop and had to be re-restored by the end-of-run
-// integrity check — the tree is healed, but the run must be treated as
-// suspect. scopedCount counts sites whose first (scoped) run did not kill
-// the mutant and that were re-confirmed against the full invocation;
-// confirmedCount counts those confirmations that killed the mutant.
-type mutationRunResult struct {
-	outcomes            []mutationSiteOutcome
-	integrityViolations []string
-	scopedCount         int
-	confirmedCount      int
 }
 
 // fromCacheCount counts kills replayed from the digest cache instead of
@@ -493,12 +526,6 @@ func (r mutationRunResult) survivorsByCategory() map[string]int {
 	}
 	return counts
 }
-
-// mutantTestRunner runs the project's test suite against the currently
-// mutated tree; the invocation arguments are resolved per site by the
-// engine (test scoping) and passed to every call. Inject a fake in tests
-// instead of running real suites.
-type mutantTestRunner func(projectRoot string, timeout time.Duration, testArgs []string) (mutantOutcome, error)
 
 // runMutationEngine mutates every site one at a time and runs the project's
 // tests against each mutant, restoring the file afterwards. testArgs is the
@@ -721,22 +748,6 @@ func mutantTestRunnerOS(projectRoot string, timeout time.Duration, testArgs []st
 		// deterministically, so it counts as survived.
 		return mutantTimeout, nil
 	}
-}
-
-// mutationOptions holds the parsed `mutation` subcommand configuration.
-type mutationOptions struct {
-	coveragePath   string
-	minScore       float64
-	maxSurvivors   int
-	timeoutSeconds int
-	maxMutants     int
-	operators      []string
-	excludes       []string
-	paths          []string
-	cache          bool
-	testArgs       []string
-	diffBase       string
-	scopeTests     bool
 }
 
 // RunMutationCommand implements `crap4go mutation [--coverage PATH]
@@ -983,17 +994,6 @@ func excludeMutationFiles(files []string, root string, patterns []string) []stri
 		}
 	}
 	return kept
-}
-
-// mutationScan is the result of scanning the scope for covered mutation
-// sites, plus the cache identities needed for digest-incremental replay:
-// every covered site's containing-method identity and every scanned
-// method's live key.
-type mutationScan struct {
-	sites       []MutationSite
-	uncovered   int
-	siteMethods map[MutationSite]mutationMethodRef
-	liveKeys    map[string]bool
 }
 
 // mutationCoveredSites detects sites in every selected file and keeps the

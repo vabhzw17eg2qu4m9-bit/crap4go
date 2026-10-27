@@ -26,9 +26,21 @@ type MagicConstantsViolation struct {
 	Message string
 }
 
+// literalSites holds, for one file, the lines of hex color literals, the
+// occurrence lines per literal value, the lines holding string literals in
+// identifier position (map keys, index expressions, case labels), and the
+// const-initializer lines that are exempt.
+type literalSites struct {
+	hexLines        []int
+	valueLines      map[string][]int
+	constantLines   map[int]bool
+	identifierLines map[int]bool
+}
+
 // ignorePath/ignoreLine expose the location to the shared ignore filter.
 func (v MagicConstantsViolation) ignorePath() string { return v.Path }
-func (v MagicConstantsViolation) ignoreLine() int    { return v.Line }
+
+func (v MagicConstantsViolation) ignoreLine() int { return v.Line }
 
 // RunMagicConstantsCommand implements `crap4go magic-constants [paths...]`:
 // it flags hex color integer literals outside const declarations and
@@ -73,17 +85,6 @@ func CheckMagicConstants(files []string, root string) ([]MagicConstantsViolation
 		violations = append(violations, literalViolations(sites, relPath(root, f))...)
 	}
 	return violations, checked
-}
-
-// literalSites holds, for one file, the lines of hex color literals, the
-// occurrence lines per literal value, the lines holding string literals in
-// identifier position (map keys, index expressions, case labels), and the
-// const-initializer lines that are exempt.
-type literalSites struct {
-	hexLines        []int
-	valueLines      map[string][]int
-	constantLines   map[int]bool
-	identifierLines map[int]bool
 }
 
 // collectLiterals walks file once, recording literal sites and marking

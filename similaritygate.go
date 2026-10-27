@@ -17,13 +17,51 @@ import (
 // machine-readable shape.
 const defaultSimFormat = "console"
 
-// similarityFormat selects the explorer output format.
-type similarityFormat int
-
 const (
 	simFormatConsole similarityFormat = iota
 	simFormatJSON
 )
+
+// similarityFormat selects the explorer output format.
+type similarityFormat int
+
+// similarityCommandOptions holds the parsed `similarity` subcommand
+// configuration.
+type similarityCommandOptions struct {
+	similarityOptions
+	format similarityFormat
+	check  bool
+}
+
+// similarityJSONThresholds echoes the effective thresholds.
+type similarityJSONThresholds struct {
+	Jaccard     float64 `json:"jaccard"`
+	Containment float64 `json:"containment"`
+	MinShingles int     `json:"min_shingles"`
+}
+
+// similarityJSONPair is one threshold-crossing pair.
+type similarityJSONPair struct {
+	A           string  `json:"a"`
+	B           string  `json:"b"`
+	Jaccard     float64 `json:"jaccard"`
+	Containment float64 `json:"containment"`
+}
+
+// similarityJSONCluster is one cluster: its sorted member files.
+type similarityJSONCluster struct {
+	Files []string `json:"files"`
+}
+
+// similarityJSON is the JSON report shape (ported from the upstream
+// command's JSON output).
+type similarityJSON struct {
+	Scanned    int                      `json:"scanned"`
+	Skipped    int                      `json:"skipped"`
+	Thresholds similarityJSONThresholds `json:"thresholds"`
+	Pairs      []similarityJSONPair     `json:"pairs"`
+	Clusters   []similarityJSONCluster  `json:"clusters"`
+}
 
 // parseSimilarityFormat parses a --format value: "console" or "json".
 func parseSimilarityFormat(value string) (similarityFormat, bool) {
@@ -34,14 +72,6 @@ func parseSimilarityFormat(value string) (similarityFormat, bool) {
 		return simFormatJSON, true
 	}
 	return 0, false
-}
-
-// similarityCommandOptions holds the parsed `similarity` subcommand
-// configuration.
-type similarityCommandOptions struct {
-	similarityOptions
-	format similarityFormat
-	check  bool
 }
 
 // RunSimilarityCommand implements `crap4go similarity [--format
@@ -148,36 +178,6 @@ func printSimilarityConsole(report SimilarityReport, opts similarityOptions, std
 		}
 	}
 	fmt.Fprintf(stdout, "\n%d files in %d clusters\n", len(report.ClusteredPaths()), len(report.Clusters))
-}
-
-// similarityJSONThresholds echoes the effective thresholds.
-type similarityJSONThresholds struct {
-	Jaccard     float64 `json:"jaccard"`
-	Containment float64 `json:"containment"`
-	MinShingles int     `json:"min_shingles"`
-}
-
-// similarityJSONPair is one threshold-crossing pair.
-type similarityJSONPair struct {
-	A           string  `json:"a"`
-	B           string  `json:"b"`
-	Jaccard     float64 `json:"jaccard"`
-	Containment float64 `json:"containment"`
-}
-
-// similarityJSONCluster is one cluster: its sorted member files.
-type similarityJSONCluster struct {
-	Files []string `json:"files"`
-}
-
-// similarityJSON is the JSON report shape (ported from the upstream
-// command's JSON output).
-type similarityJSON struct {
-	Scanned    int                      `json:"scanned"`
-	Skipped    int                      `json:"skipped"`
-	Thresholds similarityJSONThresholds `json:"thresholds"`
-	Pairs      []similarityJSONPair     `json:"pairs"`
-	Clusters   []similarityJSONCluster  `json:"clusters"`
 }
 
 // printSimilarityJSON prints the JSON report (stdout stays JSON-only).

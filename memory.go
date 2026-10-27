@@ -15,6 +15,28 @@ import (
 	"strings"
 )
 
+const (
+	anchorNone anchorKind = iota
+	anchorGC
+	anchorRun
+	anchorPause
+	anchorCont
+	anchorName
+	anchorResult
+)
+
+// tracedExecWrapper is passed to `go test -exec`: the go tool runs every
+// test binary through it, so only the test binaries trace.
+const tracedExecWrapper = "env GODEBUG=gctrace=1"
+
+// Badge colors from the shields.io palette (upstream badge_svg.dart):
+// green at or below the threshold, yellow at most twice it, red beyond.
+const (
+	badgeGreen  = "#4c1"
+	badgeYellow = "#dfb317"
+	badgeRed    = "#e05d44"
+)
+
 // The `memory` subcommand, ported from crap4dart 3bae178bc0 (memory:
 // per-test GC/alloc attribution via --verbose_gc, phase 1).
 //
@@ -82,6 +104,29 @@ var gcAnchorRe = regexp.MustCompile(`gc \d+ @[0-9.]+s`)
 // so the name is the shortest run before ` (<duration>)`.
 var resultMarkerRe = regexp.MustCompile(`--- (PASS|FAIL|SKIP): (.+?) \([0-9hms.]+\)`)
 
+// markerAnchors locates attribution markers anywhere in a line: control
+// markers, result words (which print indented one level per subtest
+// depth) — all recoverable mid-line because the go tool's relay can glue
+// fragments together.
+var markerAnchors = []struct {
+	kind    anchorKind
+	literal string
+}{
+	{anchorRun, "=== RUN "},
+	{anchorPause, "=== PAUSE "},
+	{anchorCont, "=== CONT "},
+	{anchorName, "=== NAME "},
+	{anchorResult, "--- PASS: "},
+	{anchorResult, "--- FAIL: "},
+	{anchorResult, "--- SKIP: "},
+}
+
+// memoryProfile is the command's profiler seam (tests override it; the
+// real path always uses runTracedGoTest).
+var memoryProfile = func(root string, paths []string) (memoryReport, error) {
+	return profileMemory(root, paths, runTracedGoTest)
+}
+
 // gcEvent is one gctrace row.
 type gcEvent struct {
 	seq          int
@@ -90,6 +135,78 @@ type gcEvent struct {
 	heapEndMb    float64 // heap at GC end
 	heapLiveMb   float64 // live heap after the GC
 	oldDeltaMb   float64 // liveAfter delta vs the previous GC (0 on baseline)
+}
+
+// memoryEntry aggregates the GCs of one test or package.
+type memoryEntry struct {
+	label  string
+	pkg    string // owning package path, for test entries
+	result string // pass/fail/skip, empty until the test closed
+	gcs    []gcEvent
+}
+
+// memoryReport is the full attribution result of one run.
+type memoryReport struct {
+	testCount    int
+	totalGcs     []gcEvent      // every parsed row (bucket rows included)
+	unattributed []gcEvent      // rows no test window claims (loading/teardown/between suites)
+	packages     []*memoryEntry // in `ok` flush order
+	tests        []*memoryEntry // in run start order
+}
+
+// memoryStreamParser folds one interleaved go test output stream into a
+// memoryReport (the gc_log.dart + attribution analog).
+type memoryStreamParser struct {
+	report   memoryReport
+	open     []*memoryEntry // open test windows, innermost last
+	paused   []*memoryEntry // t.Parallel() windows awaiting === CONT
+	pkgTests []*memoryEntry // this package's tests, pending the `ok` line
+	pending  []gcEvent      // GCs with no open window (loading/teardown)
+	prevLive float64        // live-heap baseline for oldDeltaMb
+	hasPrev  bool
+}
+
+// anchorKind classifies what nextAnchor found in a (possibly torn) line.
+type anchorKind int
+
+// memoryRunner runs the traced test suite and returns both output
+// streams; injectable for tests (the SuiteRunner analog).
+type memoryRunner func(dir string, args, env []string) (string, string, error)
+
+// memoryOptions holds the parsed `memory` subcommand configuration.
+type memoryOptions struct {
+	top            int
+	format         string
+	badgePath      string  // --badge: write the churn SVG here (empty = off)
+	badgeThreshold float64 // --badge-threshold MB (green at or below)
+	paths          []string
+}
+
+// memoryJSONEntry is one entry of the JSON report (upstream field names;
+// `suite` becomes `package`).
+type memoryJSONEntry struct {
+	Label       string  `json:"label"`
+	Package     string  `json:"package,omitempty"`
+	GCs         int     `json:"gcs"`
+	ChurnNewMb  float64 `json:"churnNewMb"`
+	OldGrowthMb float64 `json:"oldGrowthMb"`
+}
+
+// memoryJSON is the JSON report document. Upstream's clockOffsetSeconds
+// has no Go analog — attribution is by stream position, not by clock
+// comparison — so it is omitted. totalAllocatedMb mirrors upstream
+// b7c227d's allocation-volume total; on Go it is the churn proxy (no
+// exact allocation counter is exposed out-of-process by the runtime).
+type memoryJSON struct {
+	TestCount           int               `json:"testCount"`
+	GCCount             int               `json:"gcCount"`
+	TotalChurnMb        float64           `json:"totalChurnMb"`
+	TotalAllocatedMb    float64           `json:"totalAllocatedMb"`
+	TotalOldGrowth      float64           `json:"totalOldGrowthMb"`
+	UnattributedGCs     int               `json:"unattributedGcs"`
+	UnattributedChurnMb float64           `json:"unattributedChurnMb"`
+	Packages            []memoryJSONEntry `json:"packages"`
+	Tests               []memoryJSONEntry `json:"tests"`
 }
 
 // churnMb is the volume this GC reclaimed — the allocated-MB proxy.
@@ -131,14 +248,6 @@ func parseGcLine(line string) (gcEvent, bool) {
 	return gc, ok
 }
 
-// memoryEntry aggregates the GCs of one test or package.
-type memoryEntry struct {
-	label  string
-	pkg    string // owning package path, for test entries
-	result string // pass/fail/skip, empty until the test closed
-	gcs    []gcEvent
-}
-
 func (e *memoryEntry) churnMb() float64 { return sumChurn(e.gcs) }
 
 func (e *memoryEntry) oldGrowthMb() float64 { return sumOldGrowth(e.gcs) }
@@ -157,15 +266,6 @@ func sumOldGrowth(gcs []gcEvent) float64 {
 		total += gc.oldDeltaMb
 	}
 	return total
-}
-
-// memoryReport is the full attribution result of one run.
-type memoryReport struct {
-	testCount    int
-	totalGcs     []gcEvent      // every parsed row (bucket rows included)
-	unattributed []gcEvent      // rows no test window claims (loading/teardown/between suites)
-	packages     []*memoryEntry // in `ok` flush order
-	tests        []*memoryEntry // in run start order
 }
 
 // unattributedChurnMb is the reclaimed MB of the unattributed bucket.
@@ -193,18 +293,6 @@ func topBy(entries []*memoryEntry, key func(*memoryEntry) float64) []*memoryEntr
 	return withGcs
 }
 
-// memoryStreamParser folds one interleaved go test output stream into a
-// memoryReport (the gc_log.dart + attribution analog).
-type memoryStreamParser struct {
-	report   memoryReport
-	open     []*memoryEntry // open test windows, innermost last
-	paused   []*memoryEntry // t.Parallel() windows awaiting === CONT
-	pkgTests []*memoryEntry // this package's tests, pending the `ok` line
-	pending  []gcEvent      // GCs with no open window (loading/teardown)
-	prevLive float64        // live-heap baseline for oldDeltaMb
-	hasPrev  bool
-}
-
 // parseMemoryStream builds the report from one run's combined output.
 func parseMemoryStream(output string) memoryReport {
 	p := &memoryStreamParser{}
@@ -212,36 +300,6 @@ func parseMemoryStream(output string) memoryReport {
 		p.line(line)
 	}
 	return p.report
-}
-
-// anchorKind classifies what nextAnchor found in a (possibly torn) line.
-type anchorKind int
-
-const (
-	anchorNone anchorKind = iota
-	anchorGC
-	anchorRun
-	anchorPause
-	anchorCont
-	anchorName
-	anchorResult
-)
-
-// markerAnchors locates attribution markers anywhere in a line: control
-// markers, result words (which print indented one level per subtest
-// depth) — all recoverable mid-line because the go tool's relay can glue
-// fragments together.
-var markerAnchors = []struct {
-	kind    anchorKind
-	literal string
-}{
-	{anchorRun, "=== RUN "},
-	{anchorPause, "=== PAUSE "},
-	{anchorCont, "=== CONT "},
-	{anchorName, "=== NAME "},
-	{anchorResult, "--- PASS: "},
-	{anchorResult, "--- FAIL: "},
-	{anchorResult, "--- SKIP: "},
 }
 
 // nextAnchor locates the earliest attribution anchor: a gctrace row
@@ -494,14 +552,6 @@ func packageSummaryFields(s string) string {
 	return strings.Fields(s)[1]
 }
 
-// memoryRunner runs the traced test suite and returns both output
-// streams; injectable for tests (the SuiteRunner analog).
-type memoryRunner func(dir string, args, env []string) (string, string, error)
-
-// tracedExecWrapper is passed to `go test -exec`: the go tool runs every
-// test binary through it, so only the test binaries trace.
-const tracedExecWrapper = "env GODEBUG=gctrace=1"
-
 // memoryTestArgs builds the go test argv: verbose markers, cache
 // bypass, sequential packages, tracing scoped to the test binaries.
 // Explicit paths are exclusive; `./...` is the default.
@@ -552,21 +602,6 @@ func profileMemory(root string, paths []string, runner memoryRunner) (memoryRepo
 		}
 	}
 	return parseMemoryStream(stdout), nil
-}
-
-// memoryProfile is the command's profiler seam (tests override it; the
-// real path always uses runTracedGoTest).
-var memoryProfile = func(root string, paths []string) (memoryReport, error) {
-	return profileMemory(root, paths, runTracedGoTest)
-}
-
-// memoryOptions holds the parsed `memory` subcommand configuration.
-type memoryOptions struct {
-	top            int
-	format         string
-	badgePath      string  // --badge: write the churn SVG here (empty = off)
-	badgeThreshold float64 // --badge-threshold MB (green at or below)
-	paths          []string
 }
 
 // parseMemoryOptions parses the memory flags: --top (default 20),
@@ -686,14 +721,6 @@ func limitBy(entries []*memoryEntry, top int) []*memoryEntry {
 	return entries
 }
 
-// Badge colors from the shields.io palette (upstream badge_svg.dart):
-// green at or below the threshold, yellow at most twice it, red beyond.
-const (
-	badgeGreen  = "#4c1"
-	badgeYellow = "#dfb317"
-	badgeRed    = "#e05d44"
-)
-
 // badgeColorFor picks the badge color for churn against threshold MB:
 // at or below green; above it but at most 2× yellow; beyond that red.
 func badgeColorFor(churn, threshold float64) string {
@@ -760,33 +787,6 @@ func printMemoryTable(stdout io.Writer, entries []*memoryEntry) {
 	for _, e := range entries {
 		fmt.Fprintf(stdout, "%7d  %9.1f  %9.1f  %s\n", len(e.gcs), e.churnMb(), e.oldGrowthMb(), e.label)
 	}
-}
-
-// memoryJSONEntry is one entry of the JSON report (upstream field names;
-// `suite` becomes `package`).
-type memoryJSONEntry struct {
-	Label       string  `json:"label"`
-	Package     string  `json:"package,omitempty"`
-	GCs         int     `json:"gcs"`
-	ChurnNewMb  float64 `json:"churnNewMb"`
-	OldGrowthMb float64 `json:"oldGrowthMb"`
-}
-
-// memoryJSON is the JSON report document. Upstream's clockOffsetSeconds
-// has no Go analog — attribution is by stream position, not by clock
-// comparison — so it is omitted. totalAllocatedMb mirrors upstream
-// b7c227d's allocation-volume total; on Go it is the churn proxy (no
-// exact allocation counter is exposed out-of-process by the runtime).
-type memoryJSON struct {
-	TestCount           int               `json:"testCount"`
-	GCCount             int               `json:"gcCount"`
-	TotalChurnMb        float64           `json:"totalChurnMb"`
-	TotalAllocatedMb    float64           `json:"totalAllocatedMb"`
-	TotalOldGrowth      float64           `json:"totalOldGrowthMb"`
-	UnattributedGCs     int               `json:"unattributedGcs"`
-	UnattributedChurnMb float64           `json:"unattributedChurnMb"`
-	Packages            []memoryJSONEntry `json:"packages"`
-	Tests               []memoryJSONEntry `json:"tests"`
 }
 
 // printMemoryJSON writes the machine-readable report (stdout stays

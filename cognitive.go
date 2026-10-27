@@ -5,6 +5,14 @@ import (
 	"go/token"
 )
 
+// cognitiveWalker accumulates the cognitive score with the current nesting
+// depth; lambdas controls whether function-literal bodies are entered.
+type cognitiveWalker struct {
+	depth   int
+	score   int
+	lambdas bool
+}
+
 // CognitiveOf returns the cognitive complexity of a Go function body under
 // the SonarSource definition (white paper "Cognitive Complexity", v1.2) —
 // the Go counterpart of crap4dart's CognitiveCalculator (ported from
@@ -43,14 +51,6 @@ func CognitiveOf(body *ast.BlockStmt, countLambdas bool) int {
 	c := &cognitiveWalker{lambdas: countLambdas}
 	c.stmts(body.List)
 	return c.score
-}
-
-// cognitiveWalker accumulates the cognitive score with the current nesting
-// depth; lambdas controls whether function-literal bodies are entered.
-type cognitiveWalker struct {
-	depth   int
-	score   int
-	lambdas bool
 }
 
 // bump adds the basic-plus-nesting increment for one structural construct.

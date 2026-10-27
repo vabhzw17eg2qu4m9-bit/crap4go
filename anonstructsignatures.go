@@ -21,16 +21,17 @@ type AnonStructViolation struct {
 	Message string
 }
 
-// ignorePath/ignoreLine expose the location to the shared ignore filter.
-func (v AnonStructViolation) ignorePath() string { return v.Path }
-func (v AnonStructViolation) ignoreLine() int    { return v.Line }
-
 // anonStructOptions holds the parsed `anon-struct-signatures` subcommand
 // configuration.
 type anonStructOptions struct {
 	maxFields int
 	paths     []string
 }
+
+// ignorePath/ignoreLine expose the location to the shared ignore filter.
+func (v AnonStructViolation) ignorePath() string { return v.Path }
+
+func (v AnonStructViolation) ignoreLine() int { return v.Line }
 
 // RunAnonStructSignaturesCommand implements `crap4go anon-struct-signatures
 // [--max-fields N] [paths...]`: it flags anonymous struct types in function

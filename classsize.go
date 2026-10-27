@@ -23,9 +23,20 @@ type ClassSizeViolation struct {
 	Message string
 }
 
+// ClassSizeStats is the method count and weighted-methods sum of one named
+// type within a package.
+type ClassSizeStats struct {
+	Name    string
+	Path    string
+	Line    int
+	Methods int
+	WMC     int
+}
+
 // ignorePath/ignoreLine expose the location to the shared ignore filter.
 func (v ClassSizeViolation) ignorePath() string { return v.Path }
-func (v ClassSizeViolation) ignoreLine() int    { return v.Line }
+
+func (v ClassSizeViolation) ignoreLine() int { return v.Line }
 
 // RunClassSizeCommand implements `crap4go class-size [paths...]`: it flags
 // named types with more than maxClassMethods methods or a weighted-methods
@@ -54,16 +65,6 @@ func RunClassSizeCommand(args []string, root string, stdout, stderr io.Writer) i
 	}
 	fmt.Fprintf(stdout, "%d types within %d methods/WMC %d\n", checked, maxClassMethods, maxWmc)
 	return 0
-}
-
-// ClassSizeStats is the method count and weighted-methods sum of one named
-// type within a package.
-type ClassSizeStats struct {
-	Name    string
-	Path    string
-	Line    int
-	Methods int
-	WMC     int
 }
 
 // CheckClassSize gathers methods per named type across whole packages and

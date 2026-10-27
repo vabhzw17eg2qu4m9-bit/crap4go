@@ -30,14 +30,6 @@ const (
 	mutationCacheTool = "crap4go 0.9.0"
 )
 
-// fnv1a64Hex returns FNV-1a over text as 16 hex chars — standard library
-// hash, stable across platforms and runs.
-func fnv1a64Hex(text []byte) string {
-	h := fnv.New64a()
-	h.Write(text)
-	return fmt.Sprintf("%016x", h.Sum64())
-}
-
 // mutationCacheMeta is the mutation-relevant configuration fingerprint
 // stored in the cache envelope; any mismatch wipes the cache (full
 // re-execution) because cached outcomes were produced under different
@@ -48,26 +40,6 @@ type mutationCacheMeta struct {
 	TestArgs  string `json:"test_args"`
 }
 
-// currentMutationCacheMeta is the meta of this tool version and
-// operators/testArgs combo.
-func currentMutationCacheMeta(categories map[string]bool, testArgs []string) mutationCacheMeta {
-	names := make([]string, 0, len(categories))
-	for name := range categories {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return mutationCacheMeta{
-		Tool:      mutationCacheTool,
-		Operators: strings.Join(names, ","),
-		TestArgs:  strings.Join(testArgs, ","),
-	}
-}
-
-// matches reports whether other was produced under identical semantics.
-func (m mutationCacheMeta) matches(other mutationCacheMeta) bool {
-	return m == other
-}
-
 // mutationMethodRef is the cache identity of one method: the lookup key,
 // the digest of the method's exact source span, and the method's start
 // offset (site offsets are stored relative to it, so an edit in an earlier
@@ -76,13 +48,6 @@ type mutationMethodRef struct {
 	key    string
 	digest string
 	start  int
-}
-
-// mutationCacheKey is the stable cache key of a method: project-relative
-// file path plus its (receiver-qualified) name — two methods may share a
-// name across files, the file path keeps them distinct.
-func mutationCacheKey(relPath, methodName string) string {
-	return relPath + "#" + methodName
 }
 
 // cachedMutationOutcome is one cached per-site outcome (killed, survived
@@ -118,6 +83,50 @@ type mutationCache struct {
 	Version int                             `json:"version"`
 	Meta    mutationCacheMeta               `json:"meta"`
 	Methods map[string]cachedMutationMethod `json:"methods"`
+}
+
+// mutationCacheSession is everything the engine needs to consult and
+// update the on-disk cache during one gate run.
+type mutationCacheSession struct {
+	cache       *mutationCache
+	cacheFile   string
+	siteMethods map[MutationSite]mutationMethodRef
+	liveKeys    map[string]bool
+}
+
+// fnv1a64Hex returns FNV-1a over text as 16 hex chars — standard library
+// hash, stable across platforms and runs.
+func fnv1a64Hex(text []byte) string {
+	h := fnv.New64a()
+	h.Write(text)
+	return fmt.Sprintf("%016x", h.Sum64())
+}
+
+// currentMutationCacheMeta is the meta of this tool version and
+// operators/testArgs combo.
+func currentMutationCacheMeta(categories map[string]bool, testArgs []string) mutationCacheMeta {
+	names := make([]string, 0, len(categories))
+	for name := range categories {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return mutationCacheMeta{
+		Tool:      mutationCacheTool,
+		Operators: strings.Join(names, ","),
+		TestArgs:  strings.Join(testArgs, ","),
+	}
+}
+
+// matches reports whether other was produced under identical semantics.
+func (m mutationCacheMeta) matches(other mutationCacheMeta) bool {
+	return m == other
+}
+
+// mutationCacheKey is the stable cache key of a method: project-relative
+// file path plus its (receiver-qualified) name — two methods may share a
+// name across files, the file path keeps them distinct.
+func mutationCacheKey(relPath, methodName string) string {
+	return relPath + "#" + methodName
 }
 
 // freshMutationCache returns an empty cache under meta.
@@ -220,15 +229,6 @@ func loadMutationCache(path string, meta mutationCacheMeta) *mutationCache {
 	decoded.Version = mutationCacheVersion
 	decoded.Meta = meta
 	return &decoded
-}
-
-// mutationCacheSession is everything the engine needs to consult and
-// update the on-disk cache during one gate run.
-type mutationCacheSession struct {
-	cache       *mutationCache
-	cacheFile   string
-	siteMethods map[MutationSite]mutationMethodRef
-	liveKeys    map[string]bool
 }
 
 // ref returns the cache identity bound to site; ok=false when the site has

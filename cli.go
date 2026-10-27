@@ -72,6 +72,11 @@ Subcommands (must be the first argument):
                                    Run tests under GODEBUG=gctrace=1; report per-test
                                    allocation churn and old-gen growth (informational,
                                    always exits 0)
+  crap4go reorder [--dry-run] [paths...]
+                                   Rewrite files so top-level declarations follow the
+                                   canonical order (imports, consts, vars, types, funcs;
+                                   stable within kind, comments ride along); --dry-run
+                                   writes nothing and exits 2 when anything would change
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -88,6 +93,29 @@ const (
 	excludeFlagUsage        = "glob of project-relative paths to skip (repeatable)"
 	thresholdFlagName       = "threshold"
 )
+
+// subcommands maps gate subcommand names to their runners; all share the
+// (args, root, stdout, stderr) signature and return the exit code.
+var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
+	"file-naming":            RunFileNamingCommand,
+	"nesting":                RunNestingCommand,
+	"complexity":             RunComplexityCommand,
+	"class-size":             RunClassSizeCommand,
+	"weight-of-class":        RunWeightOfClassCommand,
+	"unused-code":            RunUnusedCodeCommand,
+	"unused-files":           RunUnusedFilesCommand,
+	"banned-imports":         RunBannedImportsCommand,
+	"magic-constants":        RunMagicConstantsCommand,
+	"duplicates":             RunDuplicatesCommand,
+	"test-assertions":        RunTestAssertionsCommand,
+	"folder-structure":       RunFolderStructureCommand,
+	"mutation":               RunMutationCommand,
+	"similarity":             RunSimilarityCommand,
+	"memory":                 RunMemoryCommand,
+	"anon-struct-signatures": RunAnonStructSignaturesCommand,
+	"scattered-constants":    RunScatteredConstantsCommand,
+	"reorder":                RunReorderCommand,
+}
 
 // options holds the parsed, validated CLI configuration.
 type options struct {
@@ -179,28 +207,6 @@ func runWithRoot(args []string, root string, stdout, stderr io.Writer) int {
 		return code
 	}
 	return runAnalyze(args, root, stdout, stderr)
-}
-
-// subcommands maps gate subcommand names to their runners; all share the
-// (args, root, stdout, stderr) signature and return the exit code.
-var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
-	"file-naming":            RunFileNamingCommand,
-	"nesting":                RunNestingCommand,
-	"complexity":             RunComplexityCommand,
-	"class-size":             RunClassSizeCommand,
-	"weight-of-class":        RunWeightOfClassCommand,
-	"unused-code":            RunUnusedCodeCommand,
-	"unused-files":           RunUnusedFilesCommand,
-	"banned-imports":         RunBannedImportsCommand,
-	"magic-constants":        RunMagicConstantsCommand,
-	"duplicates":             RunDuplicatesCommand,
-	"test-assertions":        RunTestAssertionsCommand,
-	"folder-structure":       RunFolderStructureCommand,
-	"mutation":               RunMutationCommand,
-	"similarity":             RunSimilarityCommand,
-	"memory":                 RunMemoryCommand,
-	"anon-struct-signatures": RunAnonStructSignaturesCommand,
-	"scattered-constants":    RunScatteredConstantsCommand,
 }
 
 // runSubcommand executes a subcommand when args[0] exactly matches a known
