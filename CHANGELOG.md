@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.24.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.23.0...v0.24.0) (2026-10-27)
+
+
+### Features
+
+* **cli:** reorder command — deterministic canonical member ordering ([#56](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/56)) ([fe58e47](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/fe58e47407be170a7f588500d31e720bf44fb27e))
+
 ## [0.23.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.22.0...v0.23.0) (2026-10-27)
 
 
