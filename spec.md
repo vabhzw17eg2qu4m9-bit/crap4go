@@ -75,7 +75,8 @@ combined). Unknown flags are usage errors.
 **Subcommands:** `profile`, `skill`, and the gate subcommands (`file-naming`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
-`anon-struct-signatures`, `scattered-constants`, `duplicates`, `mutation`, `similarity`)
+`anon-struct-signatures`, `scattered-constants`, `duplicates`, `mutation`, `similarity`,
+`string-hazards`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -338,9 +339,17 @@ only" (the analyze flow never runs gates). `similarity` (§23) comes from
 2b21966: the upstream pair — opt-in gate (`enabled: false` yaml) plus an
 ad-hoc always-exit-0 command — collapses into one subcommand whose
 default run is the explorer and whose `--check` flag is the gate.
+`string-hazards` (§34) comes from 62fec6833: the first
+warning-default gate — upstream's `severity: warning` (findings never
+fail the run) maps to the `--severity` flag, warning (default) exits 0,
+error exits 2; upstream's escaped-interpolation kind is omitted (Go has
+no interpolation) and the ignorable-marker registry (§32) is the
+`ignorable: true` mapping.
+
 Not applicable upstream changes: 0.5.2's profile part-of fix is Dart-only;
 0.6.0's baseline/severity/config knobs have no counterpart (no gate
-framework); 0.6.1's internal constants refactor changes no behavior;
+framework — §34's `--severity` flag is the first mapping of a severity
+knob, arriving with 62fec6833); 0.6.1's internal constants refactor changes no behavior;
 0.7.1's export-directive edges do not apply to `unused-files` — Go has no
 re-export concept (an import names the implementing package directly);
 0.9's broken-goldens/tofu/goldens-guard command (Flutter PNG goldens), the
@@ -917,7 +926,8 @@ of `0` or less is a usage error.
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |
 |      | `banned-imports`, `magic-constants`, `test-assertions`,                  |
 |      | `anon-struct-signatures`, `scattered-constants`, `duplicates`,           |
-|      | `folder-structure`, `mutation`, `similarity --check`).                   |
+|      | `folder-structure`, `mutation`, `similarity --check`,                    |
+|      | `string-hazards --severity error`).                                      |
 |      | (Also reported on stderr.)                                              |
 
 ## 27. `--run-tests`
@@ -1330,10 +1340,11 @@ name — `magic-constants`, not `magic_constants`):
   opt-in is the hard-coded `ignorableGates` registry. Unreadable or
   empty files are never suppressed.
 
-**Ignorable mapping.** The 11 line-anchored gates — `complexity`,
+**Ignorable mapping.** The 12 line-anchored gates — `complexity`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`,
 `magic-constants`, `test-assertions`, `scattered-constants`,
-`duplicates`, `banned-imports`, `anon-struct-signatures` — honor line
+`duplicates`, `banned-imports`, `anon-struct-signatures`,
+`string-hazards` — honor line
 and file markers. `file-naming` and `unused-files` violations carry no
 line, so they respond to file markers only (their upstream
 counterparts are ignorable-capable the same way). Not ignorable, with
@@ -1466,3 +1477,100 @@ files while explicit paths are honored).
 Dogfooding: `go run . reorder .` reorders the port's own source; the
 second run is a no-op (repo-scale idempotence proof), `gofmt -l`
 reports nothing afterwards, and the suite stays green.
+
+## 34. `string-hazards`
+
+```
+crap4go string-hazards [--severity warning|error] [paths...]
+```
+
+Go adaptation of crap4dart 62fec6833's `string_hazards` gate: flags
+string literals whose escaping or pattern usage contradicts what the
+author almost certainly meant, from the syntax tree only (parse errors
+skip, like every gate). Upstream has three finding kinds; Go hosts two —
+Go has no string interpolation, so upstream's escaped-interpolation
+shape (its `\$name` guarded by sibling-interpolation evidence) has
+nothing to escape and is omitted with no false-positive risk. Severity
+is the first warning-default mapping in the port: upstream defaults
+`gates.string_hazards.severity: warning` (findings print but the run
+passes), and with no gate framework the port maps that config key to
+the `--severity` flag — `warning` (default) prints findings and exits
+0, `error` exits 2 on findings; any other value is a usage error (exit
+1). The ignorable-marker system (§32) is the quiet-down mechanism:
+`string-hazards` is in the `ignorableGates` opt-in registry, so
+`// ignore:string-hazards`, `// ignore-file:string-hazards` and the
+blanket markers suppress findings.
+
+**Raw regexp with an escaped anchor** (upstream kind 2). A raw
+(backtick) string passed as the source argument of
+`regexp.Compile`, `regexp.MustCompile`, `regexp.CompilePOSIX` or
+`regexp.MustCompilePOSIX` (any alias-blind receiver named `regexp`, the
+port's textual stdlib-call convention) that ends with `\$` or starts
+with `\^` is flagged: the backslash survives into the pattern, so it
+matches a literal dollar/caret where the end/start anchor was almost
+certainly intended (a plain `$`/`^` is the anchor). Interpreted string
+sources are spared — in valid Go they cannot carry an escaped dollar,
+the exact moral of upstream's spare of non-raw `RegExp` sources (a
+parser-accepted invalid escape unquotes to an error and is skipped).
+The check is value-shaped on the literal's own text: `\\$`-style
+spellings fall under it just as upstream's `endsWith(r'\$')` does.
+Upstream's `const`/`new RegExp(...)` instance-creation arm has no Go
+counterpart (no constructor form takes a source); non-literal sources
+are never judged, like upstream.
+
+**Regex anchors in literal string patterns** (upstream kind 3).
+`strings.Replace`, `strings.ReplaceAll`, `strings.Split` and
+`strings.SplitN` match their pattern argument (the second argument) as
+literal text, so a leading `^` or trailing `$` can only ever match that
+literal character — a regexp was probably intended. `strings.TrimPrefix`
+checks the leading `^` only and `strings.TrimSuffix` the trailing `$`
+only: a prefix's match position is the string start, so an end anchor
+in a prefix (or a start anchor in a suffix) cannot be an anchor mistake
+— the position-aware narrowing of upstream's check-both-on-one-literal
+rule to the functions whose semantics make the mistake possible. The
+judgment is value-based after unquoting (raw and interpreted literals
+alike — unlike Dart, a Go interpreted string can end in a plain `$`).
+Upstream's adjacent-string arm (first part checked for `^`, last for
+`$`) has no Go counterpart: concatenations are binary expressions, not
+literals, and skip like upstream's non-literal arguments. Only
+`strings`-package receivers are matched (same textual convention);
+`foo.Replace(...)` on other receivers stays quiet — unlike upstream,
+which flags any receiver's `.split(...)`/`.replace*(...)`, because Go
+method sets make same-named methods on foreign types common and the
+stdlib functions are the regex-confusion surface.
+
+Output: one line per finding —
+`<relative path>:<line>: <message>` (messages adapted verbatim from
+upstream: `raw regexp pattern ends with '\$' — in a raw string that is
+a literal '$' character, not the end anchor; did you mean '$'?`, the
+`\^`/start-anchor twin, and `literal pattern starts with '^' — string
+patterns match literally, so this can only match a literal '^'
+character; a regexp was probably intended` / the trailing-`$` twin) —
+plus a summary (`N string hazard(s) in M files`, or `M files free of
+string hazards`). Exit code 0 on findings at the default warning
+severity, 2 with `--severity error`, 0 on a clean or empty selection,
+1 on usage errors (bad flags, unknown severity).
+
+Killing tests (stringhazards_test.go), all non-vacuous — every fixture
+triggers outside the harness, and mutation-removing a check fails its
+test: `raw_regexp_trailing_escaped_dollar` (MustCompile, end-anchor
+message), `raw_regexp_leading_escaped_caret` (Compile, start anchor),
+`raw_regexp_posix_variant` (MustCompilePOSIX wiring), the spared
+quartet `raw_regexp_plain_anchors` / `regexp_interpreted_source`
+(non-raw spare) / `regexp_non_literal_source` / `regexp_aliased_
+receiver` (receiver-match guard), `replace_anchored_patterns` (Replace
+`^` + ReplaceAll `$`), `split_anchored_separators` (Split/SplitN),
+`trim_anchored_positions` (TrimPrefix `^` flagged, TrimPrefix `$`
+spared, TrimSuffix the mirror image — the position table), 
+`replace_both_anchors` (two findings on one literal), 
+`replace_clean_patterns` (plain patterns, non-literals, foreign
+receiver), and the command-level `TestRun_StringHazards*` (warning
+default exits 0 with findings printed, `--severity error` exits 2,
+unknown severity exits 1, granular and blanket ignore markers silence
+findings even at `--severity error`).
+
+Dogfooding: `go run . string-hazards .` over the port's own source
+reports `38 files free of string hazards` — the repo's raw regexps use
+plain anchors (`^0[xX]...$`, glob patterns) and its strings.Replace/
+TrimPrefix calls carry plain literals, so nothing to fix and nothing to
+ignore.
