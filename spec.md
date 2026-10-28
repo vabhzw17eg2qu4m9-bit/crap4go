@@ -76,7 +76,7 @@ combined). Unknown flags are usage errors.
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
 `anon-struct-signatures`, `scattered-constants`, `duplicates`, `mutation`, `similarity`,
-`string-hazards`)
+`string-hazards`, `identical-branches`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -344,7 +344,10 @@ warning-default gate — upstream's `severity: warning` (findings never
 fail the run) maps to the `--severity` flag, warning (default) exits 0,
 error exits 2; upstream's escaped-interpolation kind is omitted (Go has
 no interpolation) and the ignorable-marker registry (§32) is the
-`ignorable: true` mapping.
+`ignorable: true` mapping. `identical-branches` (§35) comes from
+c6b2425add: the copy-paste-edit family, compared by canonical form —
+four of upstream's six finding kinds host in Go (no ternary, no
+try/catch), and the same `--severity` / ignorable mapping applies.
 
 Not applicable upstream changes: 0.5.2's profile part-of fix is Dart-only;
 0.6.0's baseline/severity/config knobs have no counterpart (no gate
@@ -927,7 +930,8 @@ of `0` or less is a usage error.
 |      | `banned-imports`, `magic-constants`, `test-assertions`,                  |
 |      | `anon-struct-signatures`, `scattered-constants`, `duplicates`,           |
 |      | `folder-structure`, `mutation`, `similarity --check`,                    |
-|      | `string-hazards --severity error`).                                      |
+|      | `string-hazards --severity error`,                                       |
+|      | `identical-branches --severity error`).                                  |
 |      | (Also reported on stderr.)                                              |
 
 ## 27. `--run-tests`
@@ -1340,11 +1344,11 @@ name — `magic-constants`, not `magic_constants`):
   opt-in is the hard-coded `ignorableGates` registry. Unreadable or
   empty files are never suppressed.
 
-**Ignorable mapping.** The 12 line-anchored gates — `complexity`,
+**Ignorable mapping.** The 13 line-anchored gates — `complexity`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`,
 `magic-constants`, `test-assertions`, `scattered-constants`,
 `duplicates`, `banned-imports`, `anon-struct-signatures`,
-`string-hazards` — honor line
+`string-hazards`, `identical-branches` — honor line
 and file markers. `file-naming` and `unused-files` violations carry no
 line, so they respond to file markers only (their upstream
 counterparts are ignorable-capable the same way). Not ignorable, with
@@ -1574,3 +1578,120 @@ reports `38 files free of string hazards` — the repo's raw regexps use
 plain anchors (`^0[xX]...$`, glob patterns) and its strings.Replace/
 TrimPrefix calls carry plain literals, so nothing to fix and nothing to
 ignore.
+
+## 35. `identical-branches`
+
+```
+crap4go identical-branches [--severity warning|error] [paths...]
+```
+
+Go adaptation of crap4dart c6b2425add's `identical_branches` gate: the
+copy-paste-edit bug family — syntactically identical pieces inside one
+construct where a second, slightly different piece was intended. All
+pieces compare by **canonical form**: whitespace-, comment- and
+parenthesis-independent (parenthesized operands unwrap; leaves render
+through `go/printer`, so comments never enter a key), operands of
+commutative operators (`==`, `!=`, `&&`, `||`, `+`, `*`, `&`, `|`, `^`)
+sort, and same-operator nests of the associative operators (`&&`, `||`,
+`+`, `*`, `&`, `|`, `^`) flatten — `a == b` matches `b == a` and
+`a && b` matches `b && a`. Non-commutative operators (`<`, `>`, `<=`,
+`>=`, `-`, `/`, `%`, shifts, ...) keep their operand order and tree
+shape: `a - (b - c)` never equals `(a - b) - c`. Unaries canonicalize
+as `op(operand)`.
+
+Four of upstream's six finding kinds host in Go:
+
+1. **Duplicate conditions** — two links of one `if`/`else if` chain
+   whose conditions compare equal; every later branch is unreachable.
+   An `else if` link is part of the chain rooted above it (only chain
+   heads scan); an `if` nested inside an `else` *block* starts its own
+   chain; `switch` is excluded — the compiler already rejects duplicate
+   constant cases.
+2. **Duplicate branch bodies** — two bodies in one chain whose
+   statements compare equal by token text; a single-statement block
+   unwraps to its statement, so brace style cannot hide the repeat and
+   the violation points at the statement's line (Go has no naked
+   statement form, so upstream's block-equals-naked rule lands entirely
+   in the unwrap).
+3. **Duplicate and absorbed operands** — one `&&`/`||` chain whose
+   flattened operand list contains a repeated canonical operand
+   (`a || a` collapses to `a`; `f() || f()` double-calls by accident),
+   or an operand that also appears standalone as another top-level
+   operand's conjunct (for `||`) or disjunct (for `&&`) — the
+   absorption law (`a || b && a` collapses to `a`). Only the outermost
+   link of a same-operator chain reports; parenthesized links are
+   transparent (`a || (a || b)` is one chain).
+4. **Duplicate positional arguments** — one call whose argument list
+   contains a repeated canonical argument (`f(w, h, w)` — the
+   wrong-variable bug; reported as `same as argument N`). All-literal
+   argument lists are exempt — uniform-value APIs like
+   `rect(8, 8, 8, 4)` legitimately repeat — and a literal (numeric,
+   string or char literal, or the predeclared `nil`/`true`/`false`) is
+   never reported as the repeat. Go has no named arguments, so
+   upstream's named-argument exemption is vacuous here.
+
+Host N/A (upstream shapes other hosts port, documented like their
+omissions): **identical ternary branches** (`c ? x : x`) — Go has no
+ternary; **duplicate catch bodies** in one `try` — Go has no
+try/catch. Only pieces of the *same* construct compare; identical
+conditions or bodies in separate `if` statements are legal (the state
+may change between them).
+
+Output: one line per finding —
+`<relative path>:<line>: <message>` (messages adapted verbatim from
+upstream: `duplicate condition in if/else-if chain: 'x == 0' (same as
+line 6)`, `duplicate branch body in if/else-if chain: 'return "x"'
+(same as line 5)`, `duplicate operand in '||' chain: 'a' repeats — the
+chain collapses to the single operand`, `operand of '&&' is implied by
+another operand (absorption): 'a' also appears standalone — the extra
+terms are dead`, `duplicate argument in call to 'measure': 'width'
+(same as argument 1)`) — plus a summary (`N identical-branch findings
+(M constructs checked)`, or `M constructs checked, no identical-branch
+findings`; constructs are chains, outermost boolean chains and calls
+with 2+ arguments). Exit code 0 on findings at the default warning
+severity, 2 with `--severity error`, 0 on a clean or empty selection,
+1 on usage errors (bad flags, unknown severity). Severity mirrors
+string-hazards (§34): upstream's `severity: warning` default (the
+equivalence assumes side-effect-free operands, which pure syntax cannot
+prove) maps to the `--severity` flag. Findings are ignorable via
+`// ignore:identical-branches`, `// ignore-file:identical-branches`
+and the blanket markers (§32).
+
+Killing tests (identicalbranches_test.go), all non-vacuous — every
+flagged fixture really enters a construct scan (the helper fails on
+zero constructs) and mutation-removing a check fails its test:
+`dup_condition_chain` / `dup_condition_twice` (condition repeats, line
+and `same as line` pinning), `dup_condition_canonical` (operand
+reorder + parentheses cannot hide a repeat — kills the sort/unwrap),
+`dup_condition_whitespace` (formatting cannot hide a repeat),
+`non_commutative_conditions` (`<` and `-` never reorder — kills an
+over-eager sort), `dup_body_chain` / `dup_body_else_equals_then` /
+`dup_body_block_equals_naked` (bodies; kills the unwrap — without it
+violations point at braces and brace style hides repeats),
+`dup_operand_or` (also asserts exactly one finding — kills the
+outermost-only rule), `dup_operand_and` / `dup_operand_call` /
+`absorbed_operand` / `absorbed_operand_or` (absorption both ways),
+`nested_distinct_chain`, `reordered_commutative_operands` (canonical
+sort collapses `(a && b) || (b && a)`), `dup_arg_call` /
+`all_literal_args` / `literal_never_repeat` / `predeclared_literals` /
+`distinct_args` (call arguments; kills the literal skip),
+`callee_name_shapes` (callee naming across plain/method/generic/
+parenthesized/computed call shapes),
+`separate_if_conditions` / `nested_ifs_separate_chains` /
+`switch_excluded` / `separate_if_bodies` / `else_block_if_is_own_chain`
+(scope), and the command-level `TestRun_IdenticalBranches*` (warning
+default exits 0 with findings printed, clean summary line,
+`--severity error` exits 2, unknown severity exits 1, granular and
+blanket ignore markers silence findings even at `--severity error`).
+
+Dogfooding: `go run . identical-branches .` over the port's own source
+(2070 constructs) first flagged eight argument repeats. The badge
+renderer's `svgEscape(label)`/`svgEscape(message)` repeats became named
+locals (`el`, `em` — the Go way to name the slot, upstream's
+named-argument exemption); the remaining repeats are the SVG template's
+deliberate structure (the width in both the attribute and the viewBox,
+the plate geometry `x = lw`, label/message rendered in aria-label,
+title and plates, and mutation-diff's degenerate single-line
+`[line, line]` range) — each carries a reason-carrying
+`// ignore:identical-branches` marker. The re-run reports
+`2070 constructs checked, no identical-branch findings`.
