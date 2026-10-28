@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.25.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.24.0...v0.25.0) (2026-10-28)
+
+
+### Features
+
+* **gate:** string-hazards — regex anchors, literal-pattern anchors ([#58](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/58)) ([8d7229e](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/8d7229e7f718ac26f8f6b5515e20aecd98f19862))
+
 ## [0.24.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.23.0...v0.24.0) (2026-10-27)
 
 
