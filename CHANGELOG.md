@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.26.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.25.0...v0.26.0) (2026-10-28)
+
+
+### Features
+
+* **gate:** identical-branches — copy-paste-edit family (adapted from upstream c6b2425add) ([#60](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/60)) ([a226834](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/a226834bfa50c366d4b0c1ee9d593757466c2d2f))
+
 ## [0.25.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.24.0...v0.25.0) (2026-10-28)
 
 
