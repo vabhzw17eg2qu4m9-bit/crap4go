@@ -63,7 +63,7 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 (`file-naming`,
 `nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
 `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
-`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`) dispatch on the first
+`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`, `identical-branches`) dispatch on the first
 argument only; anything else takes the analyze path above.
 
 ```sh
@@ -90,7 +90,9 @@ crap4go memory --badge badges/memory.svg   # refresh the README churn badge (sel
 crap4go reorder --dry-run          # list files whose top-level decls are out of canonical order; exit 2
 crap4go string-hazards             # flag regex anchors in raw regexp sources and literal strings.Replace/Split/Trim patterns (warning severity, exit 0)
 crap4go string-hazards --severity error   # same findings, exit 2
-crap4go skill                     # print the profiling skill for AI agents
+crap4go identical-branches         # flag duplicate conditions/bodies/chain-operands/call-args by canonical form (warning severity, exit 0)
+crap4go identical-branches --severity error   # same findings, exit 2
+crap4go skill                     # print the crap4go profiling skill for AI agents
 ```
 
 `profile` copies the module to a temp dir, wraps every function body with an
@@ -257,6 +259,33 @@ mistake is possible). The first warning-default gate: findings print
 but exit 0, upstream's `severity` config key mapped to the
 `--severity warning|error` flag, and findings are ignorable via
 `// ignore:string-hazards` / the blanket markers.
+
+`identical-branches` (from crap4dart c6b2425add's `identical_branches`)
+flags the copy-paste-edit bug family — syntactically identical pieces
+inside one construct where a second, slightly different piece was
+intended. All pieces compare by canonical form: whitespace-, comment-
+and parenthesis-independent, operands of commutative operators
+(`==`, `!=`, `&&`, `||`, `+`, `*`, `&`, `|`, `^`) sorted, same-operator
+nests flattened — `a == b` matches `b == a`, `a && b` matches `b && a`,
+and non-commutative operators (`<`, `-`, ...) never reorder. Four of
+upstream's six kinds host in Go: duplicate conditions in one
+`if`/`else if` chain (every later branch is unreachable; switch
+excluded — the compiler already rejects duplicate constant cases),
+duplicate branch bodies in one chain (a single-statement block unwraps
+to its statement, so braces cannot hide the repeat and the violation
+points at the statement), duplicate `&&`/`||` chain operands (`a || a`
+collapses to `a`) plus absorbed operands (`a || b && a` collapses to
+`a` — only the outermost link of a same-operator chain reports), and
+duplicate positional call arguments (`f(w, h, w)`) with all-literal
+lists exempt (uniform-value APIs like `rect(8, 8, 8, 4)`) and literals
+never reported as the repeat. Host N/A, like upstream's shapes other
+hosts lack: identical ternary branches (Go has no ternary) and
+duplicate catch bodies (Go has no try/catch). Only pieces of the *same*
+construct compare — identical conditions in separate `if` statements
+are legal. Same severity mapping as string-hazards: warning by default
+(the equivalence assumes side-effect-free operands), `--severity error`
+exits 2, and findings are ignorable via
+`// ignore:identical-branches` / the blanket markers.
 
 `duplicates` (from 0.2.0, plus dc64e9c's
 per-gate `sources`) tokenizes every scanned file with `go/scanner`
@@ -483,11 +512,12 @@ unknown id.
 
 Suppression is opt-in per gate. crap4go has no config file, so the
 opt-in is the hard-coded registry in `ignorefilter.go` (the host
-adaptation of upstream's `ignorable: true` config flag): the 12 gates
+adaptation of upstream's `ignorable: true` config flag): the 13 gates
 whose violations carry `file:line` — `complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `magic-constants`,
 `test-assertions`, `scattered-constants`, `duplicates`,
-`banned-imports`, `anon-struct-signatures`, `string-hazards` — honor
+`banned-imports`, `anon-struct-signatures`, `string-hazards`,
+`identical-branches` — honor
 line and file markers; `file-naming` and `unused-files` (line-less violations) honor
 file markers only. Not ignorable: `folder-structure` (violates
 directories — no lines to read), `similarity` (a suppressed file is

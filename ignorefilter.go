@@ -51,6 +51,7 @@ var ignorableGates = map[string]bool{
 	"complexity":             true,
 	"duplicates":             true,
 	"file-naming":            true,
+	"identical-branches":     true,
 	"magic-constants":        true,
 	"nesting":                true,
 	"scattered-constants":    true,

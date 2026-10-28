@@ -124,7 +124,7 @@ func mutationInDiff(diff map[string]map[int]bool, rel string, site MutationSite,
 	if m := mutationMethodAt(methods, site.Line); m != nil {
 		return diffIntersects(diff[rel], m.StartLine, m.EndLine)
 	}
-	return diffIntersects(diff[rel], site.Line, site.Line)
+	return diffIntersects(diff[rel], site.Line, site.Line) // ignore:identical-branches — degenerate single-line range
 }
 
 // diffIntersects reports whether any line in [start, end] changed.

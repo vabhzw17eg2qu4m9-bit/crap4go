@@ -82,6 +82,13 @@ Subcommands (must be the first argument):
                                    and anchors in literal strings.Replace/
                                    Split/Trim patterns; warning severity by
                                    default (exit 0), --severity error exits 2
+  crap4go identical-branches [--severity warning|error] [paths...]
+                                   Flag the copy-paste-edit family — duplicate
+                                   conditions/bodies in one if/else-if chain,
+                                   duplicate ||/&& chain operands, absorbed
+                                   operands, duplicate call arguments — all by
+                                   canonical form; warning severity by
+                                   default (exit 0), --severity error exits 2
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -121,6 +128,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"scattered-constants":    RunScatteredConstantsCommand,
 	"reorder":                RunReorderCommand,
 	"string-hazards":         RunStringHazardsCommand,
+	"identical-branches":     RunIdenticalBranchesCommand,
 }
 
 // options holds the parsed, validated CLI configuration.

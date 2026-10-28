@@ -747,6 +747,7 @@ func renderBadgeSVG(label, message, color string) string {
 	plate := func(text string) int { return int(float64(len(text))*6.3+0.5) + 10 }
 	lw, vw := plate(label), plate(message)
 	w := lw + vw
+	el, em := svgEscape(label), svgEscape(message)
 	return fmt.Sprintf(`<svg xmlns="http://www.w3.org/2000/svg" width="%d" height="20" viewBox="0 0 %d 20" role="img" aria-label="%s: %s">
   <title>%s: %s</title>
   <rect width="%d" height="20" rx="3" fill="#555"/>
@@ -758,11 +759,11 @@ func renderBadgeSVG(label, message, color string) string {
   </g>
 </svg>
 `,
-		w, w, svgEscape(label), svgEscape(message),
-		svgEscape(label), svgEscape(message),
-		lw, lw, vw, color, w,
-		lw/2, svgEscape(label),
-		lw+vw/2, svgEscape(message))
+		w, w, el, em, // ignore:identical-branches — w repeats by design (width attribute + viewBox bound)
+		el, em, // ignore:identical-branches — el/em render twice by design (aria-label + title)
+		lw, lw, vw, color, w, // ignore:identical-branches — plate geometry: the value plate starts at x=lw and w bounds the group
+		lw/2, el, // ignore:identical-branches — the label plate text repeats the escaped label
+		lw+vw/2, em) // ignore:identical-branches — the message plate text repeats the escaped message
 }
 
 // writeBadge writes the churn SVG at path: the suite churn (every
