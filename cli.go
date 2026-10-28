@@ -77,6 +77,11 @@ Subcommands (must be the first argument):
                                    canonical order (imports, consts, vars, types, funcs;
                                    stable within kind, comments ride along); --dry-run
                                    writes nothing and exits 2 when anything would change
+  crap4go string-hazards [--severity warning|error] [paths...]
+                                   Flag escaped anchors in raw regexp sources
+                                   and anchors in literal strings.Replace/
+                                   Split/Trim patterns; warning severity by
+                                   default (exit 0), --severity error exits 2
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -115,6 +120,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"anon-struct-signatures": RunAnonStructSignaturesCommand,
 	"scattered-constants":    RunScatteredConstantsCommand,
 	"reorder":                RunReorderCommand,
+	"string-hazards":         RunStringHazardsCommand,
 }
 
 // options holds the parsed, validated CLI configuration.

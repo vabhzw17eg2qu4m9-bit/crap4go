@@ -54,6 +54,7 @@ var ignorableGates = map[string]bool{
 	"magic-constants":        true,
 	"nesting":                true,
 	"scattered-constants":    true,
+	"string-hazards":         true,
 	"test-assertions":        true,
 	"unused-code":            true,
 	"unused-files":           true,

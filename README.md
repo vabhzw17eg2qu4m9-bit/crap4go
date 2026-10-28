@@ -63,7 +63,7 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 (`file-naming`,
 `nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
 `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
-`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`) dispatch on the first
+`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`) dispatch on the first
 argument only; anything else takes the analyze path above.
 
 ```sh
@@ -88,6 +88,8 @@ crap4go mutation --min-score 0.9   # mutation-test covered sites; exit 2 on surv
 crap4go memory --format json       # per-test GC/alloc churn report (informational, exit 0)
 crap4go memory --badge badges/memory.svg   # refresh the README churn badge (self-analyze)
 crap4go reorder --dry-run          # list files whose top-level decls are out of canonical order; exit 2
+crap4go string-hazards             # flag regex anchors in raw regexp sources and literal strings.Replace/Split/Trim patterns (warning severity, exit 0)
+crap4go string-hazards --severity error   # same findings, exit 2
 crap4go skill                     # print the profiling skill for AI agents
 ```
 
@@ -235,6 +237,26 @@ information and is flagged to be inlined; exported declarations
 (re-export shims), the blank identifier, computed initializers and
 Go's predeclared constants (`true`/`false`/`iota`) stay exempt, and
 `--aliases=false` (default on) switches the rule off.
+
+`string-hazards` (from crap4dart 62fec6833's `string_hazards`) flags
+string literals whose escaping or pattern usage contradicts what the
+author almost certainly meant, straight from the syntax tree. Two of
+upstream's three kinds host in Go (Go has no interpolation to escape,
+so the escaped-interpolation kind is omitted): a **raw regexp source
+with an escaped anchor** — a backtick string passed to
+`regexp.Compile`/`MustCompile`/`CompilePOSIX`/`MustCompilePOSIX` ending
+in `` `\$` `` or starting with `` `\^` `` matches a literal dollar/caret
+where the end/start anchor was almost certainly intended (interpreted
+sources are spared — valid Go cannot carry an escaped dollar in them);
+and **regex anchors in literal strings-package patterns** —
+`strings.Replace`/`ReplaceAll`/`Split`/`SplitN` match their pattern
+literally, so a leading `^` or trailing `$` there can only match that
+literal character (`strings.TrimPrefix` checks the leading `^`,
+`strings.TrimSuffix` the trailing `$` — each only where an anchor
+mistake is possible). The first warning-default gate: findings print
+but exit 0, upstream's `severity` config key mapped to the
+`--severity warning|error` flag, and findings are ignorable via
+`// ignore:string-hazards` / the blanket markers.
 
 `duplicates` (from 0.2.0, plus dc64e9c's
 per-gate `sources`) tokenizes every scanned file with `go/scanner`
@@ -461,12 +483,12 @@ unknown id.
 
 Suppression is opt-in per gate. crap4go has no config file, so the
 opt-in is the hard-coded registry in `ignorefilter.go` (the host
-adaptation of upstream's `ignorable: true` config flag): the 11 gates
+adaptation of upstream's `ignorable: true` config flag): the 12 gates
 whose violations carry `file:line` — `complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `magic-constants`,
 `test-assertions`, `scattered-constants`, `duplicates`,
-`banned-imports`, `anon-struct-signatures` — honor line and file
-markers; `file-naming` and `unused-files` (line-less violations) honor
+`banned-imports`, `anon-struct-signatures`, `string-hazards` — honor
+line and file markers; `file-naming` and `unused-files` (line-less violations) honor
 file markers only. Not ignorable: `folder-structure` (violates
 directories — no lines to read), `similarity` (a suppressed file is
 still named by its cluster peers), `mutation` (count-bearing score
