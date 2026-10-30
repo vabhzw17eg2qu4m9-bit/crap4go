@@ -48,6 +48,7 @@ var ignorableGates = map[string]bool{
 	"anon-struct-signatures": true,
 	"banned-imports":         true,
 	"class-size":             true,
+	"collapsible-flow":       true,
 	"complexity":             true,
 	"duplicates":             true,
 	"file-naming":            true,

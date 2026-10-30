@@ -63,7 +63,7 @@ crap4go --run-tests              # run "go test" with coverage before analyzing
 (`file-naming`,
 `nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
 `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
-`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`, `identical-branches`) dispatch on the first
+`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`, `identical-branches`, `collapsible-flow`) dispatch on the first
 argument only; anything else takes the analyze path above.
 
 ```sh
@@ -92,6 +92,8 @@ crap4go string-hazards             # flag regex anchors in raw regexp sources an
 crap4go string-hazards --severity error   # same findings, exit 2
 crap4go identical-branches         # flag duplicate conditions/bodies/chain-operands/call-args by canonical form (warning severity, exit 0)
 crap4go identical-branches --severity error   # same findings, exit 2
+crap4go collapsible-flow           # flag collapsible nesting: mergeable `if a { if b {} }`, redundant else, terminal-then chains (warning severity, exit 0)
+crap4go collapsible-flow --severity error   # same findings, exit 2
 crap4go skill                     # print the crap4go profiling skill for AI agents
 ```
 
@@ -286,6 +288,25 @@ are legal. Same severity mapping as string-hazards: warning by default
 (the equivalence assumes side-effect-free operands), `--severity error`
 exits 2, and findings are ignorable via
 `// ignore:identical-branches` / the blanket markers.
+
+`collapsible-flow` (from crap4dart 7bdfd64ae1's `collapsible_flow`)
+flags control-flow nesting a semantics-preserving mechanical rewrite
+can flatten. Three checks: collapsible ifs — `if a { if b { X } }` with
+no `else` on either level merges into `if a && b { X }` (short-circuit
+`&&` preserves order; an inner if with its own init never merges — the
+init cannot move into a `&&` operand; the outer if's init survives);
+redundant else — `if c { return X } else { Y }` where the then-branch
+always exits (`return`/`break`/`continue`/`panic`, a block ending in
+one, or an if/else pair whose both branches exit) — drop the keyword
+and dedent; and an else-if following an always-exiting then — a
+flattening hint (guard sequence or dispatch table), not a mechanical
+rewrite. An inner if WITHOUT an else never counts as exiting (control
+falls through when its condition is false); switch/select bodies are
+not analyzed. Host N/A: upstream's try/finally exit shapes — Go has no
+try/finally, and defer is function-scoped. Every finding is correct
+code — the gate trades flatness, not bugs — so it is warning-default
+like string-hazards: `--severity error` exits 2, and findings are
+ignorable via `// ignore:collapsible-flow` / the blanket markers.
 
 `duplicates` (from 0.2.0, plus dc64e9c's
 per-gate `sources`) tokenizes every scanned file with `go/scanner`
@@ -512,12 +533,12 @@ unknown id.
 
 Suppression is opt-in per gate. crap4go has no config file, so the
 opt-in is the hard-coded registry in `ignorefilter.go` (the host
-adaptation of upstream's `ignorable: true` config flag): the 13 gates
+adaptation of upstream's `ignorable: true` config flag): the 14 gates
 whose violations carry `file:line` — `complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `magic-constants`,
 `test-assertions`, `scattered-constants`, `duplicates`,
 `banned-imports`, `anon-struct-signatures`, `string-hazards`,
-`identical-branches` — honor
+`identical-branches`, `collapsible-flow` — honor
 line and file markers; `file-naming` and `unused-files` (line-less violations) honor
 file markers only. Not ignorable: `folder-structure` (violates
 directories — no lines to read), `similarity` (a suppressed file is

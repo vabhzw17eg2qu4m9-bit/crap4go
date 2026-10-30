@@ -201,10 +201,8 @@ func seqParent(parents []ast.Node) (token.Token, bool) {
 	if len(parents) == 0 {
 		return token.ILLEGAL, false
 	}
-	if p, ok := parents[len(parents)-1].(*ast.BinaryExpr); ok {
-		if p.Op == token.LAND || p.Op == token.LOR {
-			return p.Op, true
-		}
+	if p, ok := parents[len(parents)-1].(*ast.BinaryExpr); ok && (p.Op == token.LAND || p.Op == token.LOR) {
+		return p.Op, true
 	}
 	return token.ILLEGAL, false
 }
