@@ -76,7 +76,7 @@ combined). Unknown flags are usage errors.
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
 `anon-struct-signatures`, `scattered-constants`, `duplicates`, `mutation`, `similarity`,
-`string-hazards`, `identical-branches`)
+`string-hazards`, `identical-branches`, `collapsible-flow`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -348,6 +348,9 @@ no interpolation) and the ignorable-marker registry (§32) is the
 c6b2425add: the copy-paste-edit family, compared by canonical form —
 four of upstream's six finding kinds host in Go (no ternary, no
 try/catch), and the same `--severity` / ignorable mapping applies.
+`collapsible-flow` (§36) comes from 7bdfd64ae1: collapsible
+control-flow nesting a mechanical rewrite can flatten — the same
+`--severity` / ignorable mapping applies.
 
 Not applicable upstream changes: 0.5.2's profile part-of fix is Dart-only;
 0.6.0's baseline/severity/config knobs have no counterpart (no gate
@@ -931,7 +934,8 @@ of `0` or less is a usage error.
 |      | `anon-struct-signatures`, `scattered-constants`, `duplicates`,           |
 |      | `folder-structure`, `mutation`, `similarity --check`,                    |
 |      | `string-hazards --severity error`,                                       |
-|      | `identical-branches --severity error`).                                  |
+|      | `identical-branches --severity error`,                                   |
+|      | `collapsible-flow --severity error`).                                    |
 |      | (Also reported on stderr.)                                              |
 
 ## 27. `--run-tests`
@@ -1344,11 +1348,11 @@ name — `magic-constants`, not `magic_constants`):
   opt-in is the hard-coded `ignorableGates` registry. Unreadable or
   empty files are never suppressed.
 
-**Ignorable mapping.** The 13 line-anchored gates — `complexity`,
+**Ignorable mapping.** The 14 line-anchored gates — `complexity`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`,
 `magic-constants`, `test-assertions`, `scattered-constants`,
 `duplicates`, `banned-imports`, `anon-struct-signatures`,
-`string-hazards`, `identical-branches` — honor line
+`string-hazards`, `identical-branches`, `collapsible-flow` — honor line
 and file markers. `file-naming` and `unused-files` violations carry no
 line, so they respond to file markers only (their upstream
 counterparts are ignorable-capable the same way). Not ignorable, with
@@ -1695,3 +1699,94 @@ title and plates, and mutation-diff's degenerate single-line
 `[line, line]` range) — each carries a reason-carrying
 `// ignore:identical-branches` marker. The re-run reports
 `2070 constructs checked, no identical-branch findings`.
+
+## 36. `collapsible-flow`
+
+```
+crap4go collapsible-flow [--severity warning|error] [paths...]
+```
+
+Go adaptation of crap4dart 7bdfd64ae1's `collapsible_flow` gate:
+control-flow nesting that a semantics-preserving mechanical rewrite can
+flatten, resolved from the parsed-unresolved AST only. Three checks:
+
+1. **Collapsible if** — `if a { if b { X } }` with no `else` on either
+   level and the then-block's only statement being the inner if merges
+   into `if a && b { X }`; short-circuit `&&` preserves evaluation
+   order, so the merge is always equivalent (including side-effecting
+   conditions). An inner if carrying its own init statement never
+   merges — the init cannot move into a `&&` operand (`if a && v, ok :=
+   m[k]; ok` is invalid Go); the outer if's own init survives the merge
+   (`if v, ok := m[k]; ok && v > 1`). Go if bodies are always braced
+   and Go has no pattern conditions, so upstream's `case`-clause
+   exclusion has no host shape.
+2. **Redundant else** — `if c { return X } else { Y }` whose
+   then-branch always exits: ends in `return`, `break`, `continue`, a
+   `panic` call, a block whose last statement exits, or an if/else pair
+   whose both branches exit. The `else` is redundant — drop the keyword
+   and dedent (gofmt handles the dedent). An inner if WITHOUT an else
+   never counts as exiting: control falls through when its condition is
+   false — dedenting would change behavior (upstream learned this the
+   hard way on its own source instrumenter). `switch` and `select`
+   bodies are not analyzed (case fall-through / channel
+   nondeterminism), so a trailing switch/select never counts; `goto`
+   and `fallthrough` stay outside the jump family (conservative). A
+   file-local declaration named `panic` resolves in the AST, so a user
+   panic that returns normally is never counted.
+3. **Chain after terminal then** — an `else if` following an
+   always-exiting then-branch, flagged as a flattening hint (guard
+   sequence or dispatch table); the rewrite is not mechanical, so the
+   message shall not promise a specific fix.
+
+Host N/A: upstream's try/finally exit shapes — Go has no try/finally,
+and `defer` is function-scoped, so nothing can absorb a branch exit.
+
+Output: one line per finding — `<relative path>:<line>: <message>`
+(messages adapted from upstream: `nested if can be merged into a single
+condition with `&&``, `redundant else after an always-exiting then
+branch — dedent the else body`, `else-if follows an always-exiting then
+branch — flatten the chain into guard clauses or a dispatch table`) —
+plus a summary (`N collapsible-flow findings (M if statements checked)`,
+or `M if statements checked, no collapsible flow`; every `if`,
+including else-if links, counts as one checked statement). Exit code 0
+on findings at the default warning severity, 2 with `--severity error`,
+0 on a clean or empty selection, 1 on usage errors (bad flags, unknown
+severity). Severity mirrors string-hazards (§34) and identical-branches
+(§35): upstream's `severity: warning` default — every finding is
+correct code, the gate trades flatness, not bugs — maps to the
+`--severity` flag. Findings are ignorable via
+`// ignore:collapsible-flow`, `// ignore-file:collapsible-flow` and the
+blanket markers (§32).
+
+Killing tests (collapsibleflow_test.go), all non-vacuous — every
+fixture enters an if scan (the helper fails on zero constructs):
+`mergeIf` / `outerInitMerges` (merge positives, line and message
+pinning; the outer if's init survives the merge),
+`innerElseBlocksMerge` / `outerElseBlocksMerge` /
+`extraStatementBeforeBlocksMerge` / `extraStatementAfterBlocksMerge` /
+`innerInitBlocksMerge` (merge negatives — the inner init kills a merge
+that would emit invalid Go), `redundantElseReturn`, `jumpFixture` over
+`break`/`continue`/`panic` (the jump family),
+`bothBranchesExitChain` (both the inner if-chain and the outer if whose
+then-block ends with it are flagged, outer first), `localPanicShadows`
+(kills a name-only panic check), `fallthroughPlainThen` /
+`fallthroughBareInnerIf` (the source-instrumenter fall-through trap —
+an else-less inner if never terminates), `halfExitingPairBlocks` (an
+if/else pair whose else does not exit falls through — only the middle
+if's own redundant else flags; kills an else-exists-only terminal
+check),
+`switchNotAnalyzed` / `selectNotAnalyzed` / `typeSwitchNotAnalyzed`,
+`chainHint` / `plainElseNotChain` / `canonicalClean` (hint line
+pinning, plain-else disambiguation, canonical summary), and the
+command-level `TestRun_CollapsibleFlow*` (warning default exits 0 with
+findings printed, clean summary line, `--severity error` exits 2,
+unknown severity exits 1, granular and blanket ignore markers silence
+findings even at `--severity error`).
+
+Dogfooding: `go run . collapsible-flow` over the port's own source (the
+locally provisioned `.toolchain` excluded from the explicit selection)
+flagged two collapsible ifs — `cognitive.go`'s `seqParent` (a type
+assertion guarding an operator test) and `profile.go`'s `copyModule` (a
+path guard guarding the skip test) — both fixed by merging the
+conditions in the same commit. The re-run reports `1781 if statements
+checked, no collapsible flow`.

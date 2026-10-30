@@ -89,6 +89,13 @@ Subcommands (must be the first argument):
                                    operands, duplicate call arguments — all by
                                    canonical form; warning severity by
                                    default (exit 0), --severity error exits 2
+  crap4go collapsible-flow [--severity warning|error] [paths...]
+                                   Flag collapsible control-flow nesting:
+                                   if a { if b {} } mergeable into a && b,
+                                   redundant else after an always-exiting
+                                   then, else-if chains after a terminal
+                                   then; warning severity by default
+                                   (exit 0), --severity error exits 2
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -129,6 +136,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"reorder":                RunReorderCommand,
 	"string-hazards":         RunStringHazardsCommand,
 	"identical-branches":     RunIdenticalBranchesCommand,
+	"collapsible-flow":       RunCollapsibleFlowCommand,
 }
 
 // options holds the parsed, validated CLI configuration.

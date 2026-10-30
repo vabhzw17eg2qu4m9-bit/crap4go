@@ -186,13 +186,11 @@ func copyModule(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		if path != src {
-			if skipCopyEntry(d.Name(), d.IsDir()) {
-				if d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
+		if path != src && skipCopyEntry(d.Name(), d.IsDir()) {
+			if d.IsDir() {
+				return filepath.SkipDir
 			}
+			return nil
 		}
 		target := filepath.Join(dst, relPath(src, path))
 		if d.IsDir() {
