@@ -139,3 +139,80 @@ func TestLookupCoverage_BasenameMatch(t *testing.T) {
 		t.Fatal("expected basename match")
 	}
 }
+
+// strictLcov covers only Add's statement line; Max's span intersects no DA
+// record, and strict.go has no SF entry at all.
+const strictLcov = `SF:sample.go
+DA:4,1
+end_of_record
+`
+
+func TestAnalyzeInRoot_StrictNoEntryIsZeroAndNoStatementStaysNA(t *testing.T) {
+	root := t.TempDir()
+	src := filepath.Join(root, "sample.go")
+	if err := os.WriteFile(src, []byte(analyzerSrc), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	other := filepath.Join(root, "strict.go")
+	if err := os.WriteFile(other, []byte("package sample\n\nfunc Lonely() int {\n\treturn 1\n}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	info := filepath.Join(root, "cover.info")
+	if err := os.WriteFile(info, []byte(strictLcov), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	metrics, err := AnalyzeInRoot([]string{src, other}, info, root, true)
+	if err != nil {
+		t.Fatalf("analyze strict: %v", err)
+	}
+	byName := map[string]*MethodMetric{}
+	for i := range metrics {
+		byName[metrics[i].MethodName] = &metrics[i]
+	}
+	if cov := byName["Add"].Coverage; cov == nil || *cov != 1.0 {
+		t.Errorf("Add coverage = %v, want 1.0", cov)
+	}
+	// Covered file, but no statement record intersects Max's span: stays N/A.
+	if cov := byName["Max"].Coverage; cov != nil {
+		t.Errorf("Max coverage = %v, want nil (N/A)", *cov)
+	}
+	// No coverage entry for strict.go: 0.0%, not N/A.
+	if cov := byName["Lonely"].Coverage; cov == nil || *cov != 0.0 {
+		t.Errorf("Lonely coverage = %v, want 0.0", cov)
+	}
+
+	// Without --strict the entry-less file stays N/A.
+	metrics, err = AnalyzeInRoot([]string{src, other}, info, root, false)
+	if err != nil {
+		t.Fatalf("analyze: %v", err)
+	}
+	for _, m := range metrics {
+		if m.MethodName == "Lonely" && m.Coverage != nil {
+			t.Errorf("non-strict Lonely coverage = %v, want nil (N/A)", *m.Coverage)
+		}
+	}
+}
+
+func TestAnalyzeInRoot_StrictMissingCoverageErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	src := filepath.Join(dir, "sample.go")
+	missing := filepath.Join(dir, "does-not-exist.info")
+	if _, err := AnalyzeInRoot([]string{src}, missing, dir, true); err == nil {
+		t.Error("expected error on missing coverage file under strict")
+	}
+}
+
+func TestAnalyzeInRoot_StrictEmptyCoverageErrors(t *testing.T) {
+	dir := t.TempDir()
+	writeFixture(t, dir)
+	src := filepath.Join(dir, "sample.go")
+	empty := filepath.Join(dir, "empty.info")
+	if err := os.WriteFile(empty, []byte("TN:nothing\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := AnalyzeInRoot([]string{src}, empty, dir, true); err == nil {
+		t.Error("expected error on coverage with no records under strict")
+	}
+}

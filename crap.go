@@ -19,11 +19,14 @@ type MethodDescriptor struct {
 
 // MethodMetric is the analyzed result for one method: its complexity plus
 // optionally its coverage fraction and CRAP score. A nil Coverage or CrapScore
-// pointer means the value is unavailable (reported as "N/A").
+// pointer means the value is unavailable (reported as "N/A"). EndLine is the
+// declaration's closing line (1-based, inclusive) — the span the CRAP
+// command's --diff-base intersects.
 type MethodMetric struct {
 	MethodName string
 	File       string
 	StartLine  int
+	EndLine    int
 	Complexity int
 	Coverage   *float64
 	CrapScore  *float64

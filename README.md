@@ -47,14 +47,20 @@ crap4go --help                   # print help, exit 0
 crap4go --coverage <path>        # override coverage profile (default coverage.out)
 crap4go --threshold <num>        # override CRAP threshold (default 8.0)
 crap4go --run-tests              # run "go test" with coverage before analyzing
+crap4go --exclude GLOB           # skip files matching a project-relative glob (repeatable)
+crap4go --diff-base REF          # analyze only functions changed since git REF
+crap4go --strict                 # exit 1 on missing/empty/unparseable coverage
 ```
 
 | Flag          | Default        | Description                                              |
 |---------------|----------------|----------------------------------------------------------|
 | `--changed`   | off            | Analyze only files reported changed by `git status`.     |
-| `--coverage`  | `coverage.out` | Path to a Go cover profile.                              |
+| `--coverage`  | `coverage.out` | Path to a Go cover profile or an lcov tracefile (`.info`).|
 | `--threshold` | `8.0`          | Max numeric CRAP allowed before exit code 2.              |
 | `--run-tests` | off            | Run `go test ./... -coverprofile -covermode=atomic`.     |
+| `--exclude`   | —              | Drop files whose project-relative path matches the glob (repeatable; same glob rules as the gates). |
+| `--diff-base` | —              | Analyze only functions whose span intersects an added/changed line of `git diff --unified=0 REF`. |
+| `--strict`    | off            | Exit 1 on missing/empty coverage, a parse failure, or a selected file without a coverage entry (those files report 0.0% instead of N/A). |
 | `--help`      | —              | Print usage and exit 0.                                  |
 
 ### Subcommands
@@ -465,7 +471,12 @@ crap4go ./pkg --coverage cover.out                     # ❌ --coverage ignored
 ```
 
 Both `-flag` and `--flag` are accepted. `--changed` is mutually exclusive with
-positional paths (usage error if combined).
+positional paths and with `--diff-base` (usage error if combined). `--diff-base`
+composes with positional paths: the paths scope the selection, the diff narrows
+it to the functions whose span intersects an added or changed line of
+`git diff --unified=0 REF` (new-file paths, so renames match under their new
+name). An unknown ref — any `git diff` failure — exits 1; a selection that
+leaves no functions prints the empty-selection message and exits 0.
 
 ## Coverage format
 
@@ -483,10 +494,20 @@ pkg/path/file.go:startLine.startCol,endLine.endCol numStmt count
 
 Paths in the profile are module-prefixed (e.g. `example.com/pkg/foo.go`);
 `crap4go` matches them to source files by exact path, then by basename.
+
+A `--coverage` path ending in `.info` is parsed as an **lcov tracefile**
+instead: one `DA:<line>,<hits>` statement record per line, `SF:` selecting the
+file — two `SF:` sections for one file sum their hits per line. Relative
+`SF:` paths resolve against the project root (absolute paths are kept as
+recorded); function/branch records (FN/FNDA/BRDA/LF/LH) are ignored, and a
+`DA:` line outside any function counts for no function.
+
 If the profile is missing, a warning is printed to stderr — with a hint
 to run `go test ./... -coverprofile=coverage.out -covermode=atomic` (or
 pass `--run-tests`) — and every method's coverage/CRAP is reported as
-`N/A`.
+`N/A`. Under `--strict` a missing profile, a profile with no coverage
+records, and a selected file with no coverage entry (reported as 0.0%) are
+errors: exit 1 for the first two, 0.0% rows for the third.
 
 ## Report
 
@@ -557,7 +578,7 @@ enforced by the gate instead of living in prose alone.
 | Code | Meaning                                                                   |
 |------|---------------------------------------------------------------------------|
 | `0`  | Success (including empty selection, or max CRAP ≤ threshold).             |
-| `1`  | CLI usage error (bad flags, bad threshold, `--changed` + paths, etc.).    |
+| `1`  | CLI usage error (bad flags, bad threshold, `--changed` + paths, etc.); under `--strict`, missing/empty coverage input. |
 | `2`  | Max numeric CRAP exceeded the threshold (also prints to stderr).          |
 
 ## Development
