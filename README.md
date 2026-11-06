@@ -49,8 +49,12 @@ crap4go --threshold <num>        # override CRAP threshold (default 8.0)
 crap4go --run-tests              # run "go test" with coverage before analyzing
 crap4go --exclude GLOB           # skip files matching a project-relative glob (repeatable)
 crap4go --diff-base REF          # analyze only functions changed since git REF
-crap4go --strict                 # exit 1 on missing/empty/unparseable coverage
+crap4go --strict                 # 0.0% instead of N/A for files without a coverage entry
 ```
+
+Unit-test coverage is required: a missing or empty coverage profile fails
+the run with exit 1 (and no report). This is a breaking change — older
+releases printed a warning and reported every method as `N/A`.
 
 | Flag          | Default        | Description                                              |
 |---------------|----------------|----------------------------------------------------------|
@@ -60,7 +64,7 @@ crap4go --strict                 # exit 1 on missing/empty/unparseable coverage
 | `--run-tests` | off            | Run `go test ./... -coverprofile -covermode=atomic`.     |
 | `--exclude`   | —              | Drop files whose project-relative path matches the glob (repeatable; same glob rules as the gates). |
 | `--diff-base` | —              | Analyze only functions whose span intersects an added/changed line of `git diff --unified=0 REF`. |
-| `--strict`    | off            | Exit 1 on missing/empty coverage, a parse failure, or a selected file without a coverage entry (those files report 0.0% instead of N/A). |
+| `--strict`    | off            | Selected files without a coverage entry report 0.0% instead of N/A. (Missing/empty coverage already fails with exit 1 by default.) |
 | `--help`      | —              | Print usage and exit 0.                                  |
 
 ### Subcommands
@@ -502,12 +506,14 @@ file — two `SF:` sections for one file sum their hits per line. Relative
 recorded); function/branch records (FN/FNDA/BRDA/LF/LH) are ignored, and a
 `DA:` line outside any function counts for no function.
 
-If the profile is missing, a warning is printed to stderr — with a hint
-to run `go test ./... -coverprofile=coverage.out -covermode=atomic` (or
-pass `--run-tests`) — and every method's coverage/CRAP is reported as
-`N/A`. Under `--strict` a missing profile, a profile with no coverage
-records, and a selected file with no coverage entry (reported as 0.0%) are
-errors: exit 1 for the first two, 0.0% rows for the third.
+Unit-test coverage is **required**: a missing profile, an unreadable one, or
+a profile with no coverage records fails the run with exit 1 and no report —
+the error names the generation command (`go test ./...
+-coverprofile=coverage.out -covermode=atomic`, or pass `--run-tests`). A
+CRAP score without coverage is meaningless, so the command fails closed.
+This is a breaking change: older releases printed a warning and reported
+every method as `N/A`. A selected file with no coverage entry in an existing
+profile reports `N/A` — under `--strict` those files report 0.0% instead.
 
 ## Report
 
@@ -578,7 +584,7 @@ enforced by the gate instead of living in prose alone.
 | Code | Meaning                                                                   |
 |------|---------------------------------------------------------------------------|
 | `0`  | Success (including empty selection, or max CRAP ≤ threshold).             |
-| `1`  | CLI usage error (bad flags, bad threshold, `--changed` + paths, etc.); under `--strict`, missing/empty coverage input. |
+| `1`  | CLI usage error (bad flags, bad threshold, `--changed` + paths, etc.); missing/empty/unreadable coverage input. |
 | `2`  | Max numeric CRAP exceeded the threshold (also prints to stderr).          |
 
 ## Development

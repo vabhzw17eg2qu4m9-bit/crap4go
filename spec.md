@@ -121,10 +121,15 @@ For each method covering source lines `[startLine, endLine]`, the tool sums
 every cover block whose `[blockStart, blockEnd]` intersects the method range:
 `covered = Σ NumStmt where Count > 0`, `total = Σ NumStmt`. Coverage is the
 ratio `covered/total`. If no block intersects, coverage (and CRAP) are `null`
-for that method. If the profile file is missing, a warning is printed to
-stderr — with a hint naming the coverage generation command
+for that method.
+
+Unit-test coverage is required (fail closed): a missing profile file, an
+unreadable one, or a profile with no coverage records fails the run with
+exit 1 and no report. The error names the coverage generation command
 (`go test ./... -coverprofile=coverage.out -covermode=atomic`, or
-`--run-tests`) — and coverage is `null` for every method.
+`--run-tests`) and states that unit-test coverage is required. A selected
+file with no coverage entry in an existing profile stays `null` (`N/A`);
+under `--strict` such files report 0.0% instead.
 
 ## 6. Go parsing
 
@@ -926,7 +931,7 @@ of `0` or less is a usage error.
 | Code | Meaning                                                                  |
 |------|--------------------------------------------------------------------------|
 | `0`  | Success (including empty selection, or max CRAP ≤ threshold).            |
-| `1`  | Usage error: bad flags, bad threshold, `--changed` + paths, unreadable.  |
+| `1`  | Usage error: bad flags, bad threshold, `--changed` + paths; missing/empty/unreadable coverage input.  |
 | `2`  | Max numeric CRAP exceeded the threshold; `profile` total exceeded        |
 |      | `--threshold`; gate subcommand violations (`file-naming`, `nesting`,     |
 |      | `class-size`, `weight-of-class`, `unused-code`, `unused-files`,          |

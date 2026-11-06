@@ -94,21 +94,15 @@ func TestAnalyze_WithCoverage(t *testing.T) {
 	}
 }
 
-func TestAnalyze_MissingCoverage_YieldsNA(t *testing.T) {
+func TestAnalyze_MissingCoverageErrors(t *testing.T) {
 	dir := t.TempDir()
 	src := filepath.Join(dir, "sample.go")
 	if err := os.WriteFile(src, []byte(analyzerSrc), 0o644); err != nil {
 		t.Fatalf("write: %v", err)
 	}
 	missing := filepath.Join(dir, "does-not-exist.out")
-	metrics, err := Analyze([]string{src}, missing)
-	if err != nil {
-		t.Fatalf("analyze: %v", err)
-	}
-	for _, m := range metrics {
-		if m.Coverage != nil || m.CrapScore != nil {
-			t.Errorf("method %q should have N/A coverage/CRAP", m.MethodName)
-		}
+	if _, err := Analyze([]string{src}, missing); err == nil {
+		t.Fatal("expected error on missing coverage file")
 	}
 }
 
@@ -194,17 +188,19 @@ func TestAnalyzeInRoot_StrictNoEntryIsZeroAndNoStatementStaysNA(t *testing.T) {
 	}
 }
 
-func TestAnalyzeInRoot_StrictMissingCoverageErrors(t *testing.T) {
+// The fail-closed default: a missing coverage file errors without --strict.
+func TestAnalyzeInRoot_MissingCoverageErrors(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	src := filepath.Join(dir, "sample.go")
 	missing := filepath.Join(dir, "does-not-exist.info")
-	if _, err := AnalyzeInRoot([]string{src}, missing, dir, true); err == nil {
-		t.Error("expected error on missing coverage file under strict")
+	if _, err := AnalyzeInRoot([]string{src}, missing, dir, false); err == nil {
+		t.Error("expected error on missing coverage file by default")
 	}
 }
 
-func TestAnalyzeInRoot_StrictEmptyCoverageErrors(t *testing.T) {
+// The fail-closed default: a record-less profile errors without --strict.
+func TestAnalyzeInRoot_EmptyCoverageErrors(t *testing.T) {
 	dir := t.TempDir()
 	writeFixture(t, dir)
 	src := filepath.Join(dir, "sample.go")
@@ -212,7 +208,7 @@ func TestAnalyzeInRoot_StrictEmptyCoverageErrors(t *testing.T) {
 	if err := os.WriteFile(empty, []byte("TN:nothing\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := AnalyzeInRoot([]string{src}, empty, dir, true); err == nil {
-		t.Error("expected error on coverage with no records under strict")
+	if _, err := AnalyzeInRoot([]string{src}, empty, dir, false); err == nil {
+		t.Error("expected error on coverage with no records by default")
 	}
 }

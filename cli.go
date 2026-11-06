@@ -21,9 +21,13 @@ const usage = `Usage:
                                    (repeatable)
   crap4go --diff-base REF          Analyze only functions with added/changed lines since
                                    git REF (new-file paths; renames use the new path)
-  crap4go --strict                 Exit 1 on a missing or empty coverage profile, a parse
-                                   failure, or a selected file without a coverage entry
-                                   (such files report 0.0% instead of N/A)
+  crap4go --strict                 Report 0.0% (instead of N/A) for a selected file without
+                                   a coverage entry
+
+Unit-test coverage is required: a missing or empty coverage profile fails
+with exit 1 and no report — generate it with
+'go test ./... -coverprofile=coverage.out -covermode=atomic', or pass
+--run-tests to do it automatically.
 
 Subcommands (must be the first argument):
   crap4go profile [flags] [paths]  Run instrumented tests; report per-method timing
@@ -182,7 +186,7 @@ func parseOptions(args []string, stdout, stderr io.Writer) (options, int, bool) 
 	coveragePath := fs.String("coverage", "coverage.out", "coverage profile path")
 	threshold := fs.Float64(thresholdFlagName, 8.0, "CRAP threshold")
 	runTests := fs.Bool("run-tests", false, "run go test before analyzing")
-	strict := fs.Bool("strict", false, "fail (exit 1) on missing or empty coverage and files without coverage entries")
+	strict := fs.Bool("strict", false, "report 0.0% instead of N/A for selected files without coverage entries")
 	var excludes stringSlice
 	fs.Var(&excludes, excludeFlagName, excludeFlagUsage)
 	diffBase := fs.String("diff-base", "", "git `ref`: analyze only functions changed since it")
@@ -240,16 +244,6 @@ func resolveCoveragePath(path, root string) string {
 		return path
 	}
 	return filepath.Join(root, path)
-}
-
-// warnIfCoverageMissing writes a warning when the coverage file is absent,
-// with a hint naming the port's own coverage generation command (ported
-// from crap4dart 0.8.7).
-func warnIfCoverageMissing(resolved, display string, stderr io.Writer) {
-	if _, err := os.Stat(resolved); os.IsNotExist(err) {
-		fmt.Fprintf(stderr, "Warning: coverage file %s not found. Coverage will be N/A.\n", display)
-		fmt.Fprintln(stderr, "Hint: generate coverage first — `go test ./... -coverprofile=coverage.out -covermode=atomic`, or pass --run-tests to do it automatically.")
-	}
 }
 
 // runWithRoot is Run with an explicit project root, used by tests. The first
@@ -334,9 +328,6 @@ func runAnalyzeCoverage(opts options, files []string, diff map[string]map[int]bo
 		}
 	}
 	covPath := resolveCoveragePath(opts.coveragePath, root)
-	if !opts.strict {
-		warnIfCoverageMissing(covPath, opts.coveragePath, stderr)
-	}
 	metrics, err := AnalyzeInRoot(files, covPath, root, opts.strict)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
