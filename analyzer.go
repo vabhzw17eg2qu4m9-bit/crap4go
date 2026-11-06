@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -11,8 +12,22 @@ import (
 // coverage is treated as unknown for every method (no error returned). Any
 // other coverage-read or source-parse failure is returned as an error.
 func Analyze(filePaths []string, coveragePath string) ([]MethodMetric, error) {
-	coverage, err := ParseCoverProfile(coveragePath)
-	if err != nil && !os.IsNotExist(err) {
+	return AnalyzeInRoot(filePaths, coveragePath, "", false)
+}
+
+// zeroCoverage is the strict-mode coverage fraction for a selected file with
+// no coverage entry.
+var zeroCoverage = 0.0
+
+// AnalyzeInRoot is Analyze with the project root and strict mode. root
+// resolves relative lcov SF: paths to absolute keys (an empty root keeps the
+// profile's own keys). Under strict, a missing coverage file is an error, a
+// profile with no coverage records is an error, and a selected file with no
+// coverage entry reports coverage 0.0% for all its methods instead of
+// unknown — while a function with no statements in a covered file stays N/A.
+func AnalyzeInRoot(filePaths []string, coveragePath, root string, strict bool) ([]MethodMetric, error) {
+	coverage, err := loadCoverageStrict(coveragePath, root, strict)
+	if err != nil {
 		return nil, err
 	}
 	metrics := make([]MethodMetric, 0, len(filePaths))
@@ -27,11 +42,12 @@ func Analyze(filePaths []string, coveragePath string) ([]MethodMetric, error) {
 		}
 		fc := lookupCoverage(coverage, path)
 		for _, m := range methods {
-			cov := CoverageForMethod(fc, m.StartLine, m.EndLine)
+			cov := methodCoverage(fc, m, strict)
 			metrics = append(metrics, MethodMetric{
 				MethodName: m.Name,
 				File:       path,
 				StartLine:  m.StartLine,
+				EndLine:    m.EndLine,
 				Complexity: m.Complexity,
 				Coverage:   cov,
 				CrapScore:  CrapScore(m.Complexity, cov),
@@ -39,6 +55,45 @@ func Analyze(filePaths []string, coveragePath string) ([]MethodMetric, error) {
 		}
 	}
 	return metrics, nil
+}
+
+// loadCoverageStrict reads the coverage profile under the strict flag: a
+// missing file or a profile with no coverage records is an error, while
+// non-strict keeps the historical tolerance for a missing file (all N/A).
+func loadCoverageStrict(coveragePath, root string, strict bool) (map[string]*FileCoverage, error) {
+	coverage, err := loadCoverage(coveragePath, root)
+	if err != nil {
+		if strict || !os.IsNotExist(err) {
+			return nil, err
+		}
+		return nil, nil
+	}
+	if strict && coverageRecords(coverage) == 0 {
+		return nil, fmt.Errorf("strict: no coverage records in %s", coveragePath)
+	}
+	return coverage, nil
+}
+
+// methodCoverage attributes a method's coverage from its file's entry. Under
+// strict, a file with no coverage entry reports 0.0% instead of unknown; a
+// function with no statements in a covered file stays N/A in every mode.
+func methodCoverage(fc *FileCoverage, m MethodDescriptor, strict bool) *float64 {
+	cov := CoverageForMethod(fc, m.StartLine, m.EndLine)
+	if strict && cov == nil && fc == nil {
+		return &zeroCoverage
+	}
+	return cov
+}
+
+// coverageRecords counts the statement records across the profile: strict
+// mode treats a profile with none (an empty native profile or an lcov
+// tracefile with no DA records) as empty input.
+func coverageRecords(coverage map[string]*FileCoverage) int {
+	total := 0
+	for _, fc := range coverage {
+		total += len(fc.Blocks)
+	}
+	return total
 }
 
 // lookupCoverage finds the coverage entry for a source file. Cover-profile

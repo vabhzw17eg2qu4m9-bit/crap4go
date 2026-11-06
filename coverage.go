@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
+	"strings"
 )
 
 // coverLineRe matches a single cover-profile data line:
@@ -118,4 +121,149 @@ func CoverageForMethod(fc *FileCoverage, startLine, endLine int) *float64 {
 	}
 	fraction := float64(covered) / float64(total)
 	return &fraction
+}
+
+// loadCoverage reads the --coverage profile: a name ending in .info is an
+// lcov tracefile, anything else the native Go cover profile. Relative lcov
+// SF: paths resolve against root (absolute paths keep the profile's own key);
+// an empty root leaves the keys as recorded.
+func loadCoverage(path, root string) (map[string]*FileCoverage, error) {
+	if !strings.HasSuffix(path, ".info") {
+		return ParseCoverProfile(path)
+	}
+	profile, err := ParseLcovProfile(path)
+	if err != nil || root == "" {
+		return profile, err
+	}
+	resolved := make(map[string]*FileCoverage, len(profile))
+	for sfPath, fc := range profile {
+		if !filepath.IsAbs(sfPath) {
+			sfPath = filepath.Join(root, sfPath)
+		}
+		resolved[sfPath] = fc
+	}
+	return resolved, nil
+}
+
+// ParseLcovProfile reads and parses an lcov tracefile from path. Returns a map
+// keyed by the recorded SF: path (relative paths are the caller's to resolve).
+func ParseLcovProfile(path string) (map[string]*FileCoverage, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return ParseLcovProfileReader(f)
+}
+
+// ParseLcovProfileReader parses an lcov tracefile from any io.Reader. Each
+// `DA:<line>,<hits>` record is one statement on that source line (the block
+// spans the single line); repeated SF: sections for one file sum their hits
+// per line. FN/FNDA/BRDA/LF/LH records and blank lines are ignored; anything
+// else is a parse error. CRLF tracefiles parse (the \r is trimmed before
+// matching).
+func ParseLcovProfileReader(r io.Reader) (map[string]*FileCoverage, error) {
+	hits := make(map[string]map[int]int)
+	file := ""
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		line := strings.TrimSuffix(scanner.Text(), "\r")
+		if isLcovMetaLine(line) {
+			continue
+		}
+		var err error
+		file, err = addLcovRecords(hits, file, line)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, err
+	}
+	return lcovProfile(hits), nil
+}
+
+// addLcovRecords consumes one non-meta lcov line: an SF header selects the
+// current file, a DA record adds its hits, anything else is malformed.
+// Returns the (possibly updated) current file.
+func addLcovRecords(hits map[string]map[int]int, file, line string) (string, error) {
+	switch {
+	case strings.HasPrefix(line, "SF:"):
+		file = line[len("SF:"):]
+		if hits[file] == nil {
+			hits[file] = make(map[int]int)
+		}
+	case strings.HasPrefix(line, "DA:"):
+		if err := addLcovHits(hits, file, line); err != nil {
+			return file, err
+		}
+	default:
+		return file, fmt.Errorf("malformed lcov line: %q", line)
+	}
+	return file, nil
+}
+
+// addLcovHits adds one DA record's hits to the current file's line totals.
+func addLcovHits(hits map[string]map[int]int, file, line string) error {
+	if file == "" {
+		return fmt.Errorf("lcov DA record outside SF section: %q", line)
+	}
+	lineNo, count, err := parseLcovDA(line)
+	if err != nil {
+		return err
+	}
+	hits[file][lineNo] += count
+	return nil
+}
+
+// lcovProfile materializes the accumulated per-line hit totals as one
+// single-line block per DA record, in ascending line order.
+func lcovProfile(hits map[string]map[int]int) map[string]*FileCoverage {
+	profile := make(map[string]*FileCoverage, len(hits))
+	for path, lineHits := range hits {
+		fc := &FileCoverage{}
+		lines := make([]int, 0, len(lineHits))
+		for lineNo := range lineHits {
+			lines = append(lines, lineNo)
+		}
+		sort.Ints(lines)
+		for _, lineNo := range lines {
+			fc.Blocks = append(fc.Blocks, CoverBlock{
+				StartLine: lineNo,
+				EndLine:   lineNo,
+				NumStmt:   1,
+				Count:     lineHits[lineNo],
+			})
+		}
+		profile[path] = fc
+	}
+	return profile
+}
+
+// isLcovMetaLine reports whether line carries no statement coverage: blank
+// lines, `end_of_record`, the trace name (TN) and the function/branch
+// instrumentation records and summary counters (FN*, BR*, LF, LH).
+func isLcovMetaLine(line string) bool {
+	return line == "" || line == "end_of_record" || strings.HasPrefix(line, "TN:") ||
+		strings.HasPrefix(line, "FN") || strings.HasPrefix(line, "BR") ||
+		strings.HasPrefix(line, "LF:") || strings.HasPrefix(line, "LH:")
+}
+
+// parseLcovDA extracts the line number and hit count from a DA record. A
+// third checksum field, when present, is ignored; anything less than
+// line,count is malformed.
+func parseLcovDA(line string) (lineNo, count int, err error) {
+	fields := strings.Split(line[len("DA:"):], ",")
+	if len(fields) < 2 {
+		return 0, 0, fmt.Errorf("malformed lcov DA record: %q", line)
+	}
+	lineNo, err = strconv.Atoi(fields[0])
+	if err != nil {
+		return 0, 0, fmt.Errorf("malformed lcov DA record: %q", line)
+	}
+	count, err = strconv.Atoi(fields[1])
+	if err != nil {
+		return 0, 0, fmt.Errorf("malformed lcov DA record: %q", line)
+	}
+	return lineNo, count, nil
 }

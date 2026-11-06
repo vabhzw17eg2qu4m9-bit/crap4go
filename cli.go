@@ -17,6 +17,13 @@ const usage = `Usage:
   crap4go --coverage <path>        Override the coverage profile path (default coverage.out)
   crap4go --threshold <num>        Override the CRAP threshold (default 8.0)
   crap4go --run-tests              Run "go test" before analyzing
+  crap4go --exclude GLOB           Skip files whose project-relative path matches GLOB
+                                   (repeatable)
+  crap4go --diff-base REF          Analyze only functions with added/changed lines since
+                                   git REF (new-file paths; renames use the new path)
+  crap4go --strict                 Exit 1 on a missing or empty coverage profile, a parse
+                                   failure, or a selected file without a coverage entry
+                                   (such files report 0.0% instead of N/A)
 
 Subcommands (must be the first argument):
   crap4go profile [flags] [paths]  Run instrumented tests; report per-method timing
@@ -145,6 +152,9 @@ type options struct {
 	coveragePath string
 	threshold    float64
 	runTests     bool
+	diffBase     string
+	strict       bool
+	excludes     []string
 	posArgs      []string
 }
 
@@ -172,6 +182,10 @@ func parseOptions(args []string, stdout, stderr io.Writer) (options, int, bool) 
 	coveragePath := fs.String("coverage", "coverage.out", "coverage profile path")
 	threshold := fs.Float64(thresholdFlagName, 8.0, "CRAP threshold")
 	runTests := fs.Bool("run-tests", false, "run go test before analyzing")
+	strict := fs.Bool("strict", false, "fail (exit 1) on missing or empty coverage and files without coverage entries")
+	var excludes stringSlice
+	fs.Var(&excludes, excludeFlagName, excludeFlagUsage)
+	diffBase := fs.String("diff-base", "", "git `ref`: analyze only functions changed since it")
 
 	if err := fs.Parse(args); err != nil {
 		if err == flag.ErrHelp {
@@ -183,10 +197,8 @@ func parseOptions(args []string, stdout, stderr io.Writer) (options, int, bool) 
 		fmt.Fprint(stdout, usage)
 		return options{}, 0, false
 	}
-	if *changed && len(fs.Args()) > 0 {
-		fmt.Fprintln(stderr, "--changed cannot be combined with file arguments")
-		fmt.Fprint(stdout, usage)
-		return options{}, 1, false
+	if code, ok := validateAnalyzeOptions(*changed, fs.Args(), *diffBase, stdout, stderr); !ok {
+		return options{}, code, false
 	}
 	if *threshold <= 0 {
 		fmt.Fprintf(stderr, "threshold must be positive, got %g\n", *threshold)
@@ -197,8 +209,29 @@ func parseOptions(args []string, stdout, stderr io.Writer) (options, int, bool) 
 		coveragePath: *coveragePath,
 		threshold:    *threshold,
 		runTests:     *runTests,
+		diffBase:     *diffBase,
+		strict:       *strict,
+		excludes:     excludes.slice(),
 		posArgs:      fs.Args(),
 	}, 0, true
+}
+
+// validateAnalyzeOptions reports the analyze command's mutual-exclusion
+// usage errors: --changed with positional paths, and --diff-base with
+// --changed. ok=false means the usage was already reported; code is the exit
+// code to return.
+func validateAnalyzeOptions(changed bool, posArgs []string, diffBase string, stdout, stderr io.Writer) (int, bool) {
+	if changed && len(posArgs) > 0 {
+		fmt.Fprintln(stderr, "--changed cannot be combined with file arguments")
+		fmt.Fprint(stdout, usage)
+		return 1, false
+	}
+	if diffBase != "" && changed {
+		fmt.Fprintln(stderr, "--diff-base cannot be combined with --changed")
+		fmt.Fprint(stdout, usage)
+		return 1, false
+	}
+	return 0, true
 }
 
 // resolveCoveragePath makes a relative coverage path absolute under root.
@@ -251,14 +284,15 @@ func runSubcommand(args []string, root string, stdout, stderr io.Writer) (int, b
 }
 
 // runAnalyze is the original analyze flow: parse flags, select source files,
-// optionally run tests, then emit the CRAP report.
+// optionally run tests, then emit the CRAP report. --exclude drops selected
+// files; --diff-base narrows the selection to the functions whose span
+// intersects an added or changed line of the ref's diff.
 func runAnalyze(args []string, root string, stdout, stderr io.Writer) int {
 	opts, code, ok := parseOptions(args, stdout, stderr)
 	if !ok {
 		return code
 	}
-
-	files, err := selectFiles(opts.changed, opts.posArgs, root)
+	files, diff, err := selectAnalyzeFiles(opts, root)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
@@ -267,29 +301,68 @@ func runAnalyze(args []string, root string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "No Go files to analyze.")
 		return 0
 	}
+	return runAnalyzeCoverage(opts, files, diff, root, stdout, stderr)
+}
 
+// selectAnalyzeFiles resolves the file selection: the active mode (changed,
+// explicit paths, or the full walk), minus exclude globs, minus files with no
+// added or changed lines under --diff-base. The returned diff is nil without
+// --diff-base (a full run).
+func selectAnalyzeFiles(opts options, root string) ([]string, map[string]map[int]bool, error) {
+	files, err := selectFiles(opts.changed, opts.posArgs, root)
+	if err != nil {
+		return nil, nil, err
+	}
+	files = excludeAnalyzeFiles(files, root, opts.excludes)
+	diff, err := analyzeDiffFor(opts, root)
+	if err != nil {
+		return nil, nil, err
+	}
+	if diff != nil {
+		files = restrictToDiffFiles(files, root, diff)
+	}
+	return files, diff, nil
+}
+
+// runAnalyzeCoverage runs the tests when asked, attributes coverage, applies
+// the diff's function selection, and emits the report.
+func runAnalyzeCoverage(opts options, files []string, diff map[string]map[int]bool, root string, stdout, stderr io.Writer) int {
 	if opts.runTests {
 		if err := RunTests(root); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
 	}
-
 	covPath := resolveCoveragePath(opts.coveragePath, root)
-	warnIfCoverageMissing(covPath, opts.coveragePath, stderr)
-	return emitReport(files, covPath, opts, stdout, stderr)
-}
-
-// emitReport analyzes files, prints the sorted report, and enforces the CRAP
-// threshold. It returns the process exit code (1 on analyze error, 2 on
-// threshold exceeded, 0 otherwise).
-func emitReport(files []string, covPath string, opts options, stdout, stderr io.Writer) int {
-	metrics, err := Analyze(files, covPath)
+	if !opts.strict {
+		warnIfCoverageMissing(covPath, opts.coveragePath, stderr)
+	}
+	metrics, err := AnalyzeInRoot(files, covPath, root, opts.strict)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if diff != nil {
+		return emitDiffReport(metrics, opts, root, diff, stdout, stderr)
+	}
+	return emitReport(metrics, opts, stdout, stderr)
+}
 
+// emitDiffReport applies the --diff-base function selection and emits the
+// report; a selection with no surviving functions prints the empty-selection
+// message and exits 0.
+func emitDiffReport(metrics []MethodMetric, opts options, root string, diff map[string]map[int]bool, stdout, stderr io.Writer) int {
+	metrics = keepDiffFunctions(metrics, root, diff)
+	if len(metrics) == 0 {
+		fmt.Fprintln(stdout, "No Go files to analyze.")
+		return 0
+	}
+	return emitReport(metrics, opts, stdout, stderr)
+}
+
+// emitReport prints the sorted report and enforces the CRAP threshold. It
+// returns the process exit code (2 on threshold exceeded, 0 otherwise).
+func emitReport(metrics []MethodMetric, opts options, stdout, stderr io.Writer) int {
 	SortMetrics(metrics)
 	fmt.Fprint(stdout, FormatReport(metrics, opts.threshold))
 
@@ -298,6 +371,55 @@ func emitReport(files []string, covPath string, opts options, stdout, stderr io.
 		return 2
 	}
 	return 0
+}
+
+// excludeAnalyzeFiles drops files whose project-relative path matches any
+// exclude glob (the gates' convention).
+func excludeAnalyzeFiles(files []string, root string, patterns []string) []string {
+	if len(patterns) == 0 {
+		return files
+	}
+	var kept []string
+	for _, f := range files {
+		if !matchesAnyGlob(relPath(root, f), patterns) {
+			kept = append(kept, f)
+		}
+	}
+	return kept
+}
+
+// analyzeDiffFor maps the added or changed lines of --diff-base; nil without
+// one (a full run). The error is the mutation plumbing's exit-1 git error.
+func analyzeDiffFor(opts options, root string) (map[string]map[int]bool, error) {
+	if opts.diffBase == "" {
+		return nil, nil
+	}
+	return mutationDiffLines(root, opts.diffBase)
+}
+
+// restrictToDiffFiles keeps only selected files whose project-relative path
+// carries added or changed lines in the diff (new-file paths, so renames
+// match under their new name).
+func restrictToDiffFiles(files []string, root string, diff map[string]map[int]bool) []string {
+	var kept []string
+	for _, f := range files {
+		if len(diff[relPath(root, f)]) > 0 {
+			kept = append(kept, f)
+		}
+	}
+	return kept
+}
+
+// keepDiffFunctions retains only the functions whose [StartLine, EndLine]
+// span intersects an added or changed line of the diff.
+func keepDiffFunctions(metrics []MethodMetric, root string, diff map[string]map[int]bool) []MethodMetric {
+	var kept []MethodMetric
+	for _, m := range metrics {
+		if diffIntersects(diff[relPath(root, m.File)], m.StartLine, m.EndLine) {
+			kept = append(kept, m)
+		}
+	}
+	return kept
 }
 
 // selectFiles expands the selection per the active mode: --changed delegates
