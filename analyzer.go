@@ -8,9 +8,9 @@ import (
 )
 
 // Analyze reads each Go source file, extracts methods, attributes coverage
-// from coveragePath, and computes CRAP scores. If coveragePath does not exist,
-// coverage is treated as unknown for every method (no error returned). Any
-// other coverage-read or source-parse failure is returned as an error.
+// from coveragePath, and computes CRAP scores. A missing or record-less
+// coverage profile is an error: unit-test coverage is required (fail closed).
+// Any other coverage-read or source-parse failure is returned as an error.
 func Analyze(filePaths []string, coveragePath string) ([]MethodMetric, error) {
 	return AnalyzeInRoot(filePaths, coveragePath, "", false)
 }
@@ -21,12 +21,12 @@ var zeroCoverage = 0.0
 
 // AnalyzeInRoot is Analyze with the project root and strict mode. root
 // resolves relative lcov SF: paths to absolute keys (an empty root keeps the
-// profile's own keys). Under strict, a missing coverage file is an error, a
-// profile with no coverage records is an error, and a selected file with no
+// profile's own keys). A missing coverage file or a profile with no coverage
+// records is an error in every mode; under strict, a selected file with no
 // coverage entry reports coverage 0.0% for all its methods instead of
 // unknown — while a function with no statements in a covered file stays N/A.
 func AnalyzeInRoot(filePaths []string, coveragePath, root string, strict bool) ([]MethodMetric, error) {
-	coverage, err := loadCoverageStrict(coveragePath, root, strict)
+	coverage, err := requireCoverage(coveragePath, root)
 	if err != nil {
 		return nil, err
 	}
@@ -57,19 +57,23 @@ func AnalyzeInRoot(filePaths []string, coveragePath, root string, strict bool) (
 	return metrics, nil
 }
 
-// loadCoverageStrict reads the coverage profile under the strict flag: a
-// missing file or a profile with no coverage records is an error, while
-// non-strict keeps the historical tolerance for a missing file (all N/A).
-func loadCoverageStrict(coveragePath, root string, strict bool) (map[string]*FileCoverage, error) {
+// coverageHint names the port's own coverage generation command; the
+// fail-closed errors reuse it so every failure is actionable.
+const coverageHint = "Hint: generate coverage first — `go test ./... -coverprofile=coverage.out -covermode=atomic`, or pass --run-tests to do it automatically."
+
+// requireCoverage reads the coverage profile, failing closed: a missing file
+// or a profile with no coverage records is an error naming the generation
+// command — a CRAP score without unit-test coverage is meaningless.
+func requireCoverage(coveragePath, root string) (map[string]*FileCoverage, error) {
 	coverage, err := loadCoverage(coveragePath, root)
 	if err != nil {
-		if strict || !os.IsNotExist(err) {
-			return nil, err
+		if os.IsNotExist(err) {
+			return nil, fmt.Errorf("unit-test coverage is required: coverage file %s not found. %s", coveragePath, coverageHint)
 		}
-		return nil, nil
+		return nil, err
 	}
-	if strict && coverageRecords(coverage) == 0 {
-		return nil, fmt.Errorf("strict: no coverage records in %s", coveragePath)
+	if coverageRecords(coverage) == 0 {
+		return nil, fmt.Errorf("unit-test coverage is required: no coverage records in %s. %s", coveragePath, coverageHint)
 	}
 	return coverage, nil
 }

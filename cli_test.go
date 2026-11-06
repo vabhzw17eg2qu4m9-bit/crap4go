@@ -119,21 +119,52 @@ func TestRun_BadThresholdIsUsageError(t *testing.T) {
 	}
 }
 
-func TestRun_MissingCoverageWarnsButSucceeds(t *testing.T) {
+func TestRun_MissingCoverageExits1(t *testing.T) {
 	root, src, _ := setupProject(t, false)
 	var out, errOut bytes.Buffer
 	code := runWithRoot([]string{src}, root, &out, &errOut)
-	if code != 0 {
-		t.Fatalf("code = %d, want 0", code)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stderr=%s", code, errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "Warning:") {
-		t.Errorf("stderr missing warning: %q", errOut.String())
+	if !strings.Contains(errOut.String(), "unit-test coverage is required") {
+		t.Errorf("stderr missing fail-closed message: %q", errOut.String())
 	}
-	if !strings.Contains(errOut.String(), "Hint: generate coverage first") {
-		t.Errorf("stderr missing coverage hint: %q", errOut.String())
+	if !strings.Contains(errOut.String(), "go test ./... -coverprofile") {
+		t.Errorf("stderr missing coverage generation hint: %q", errOut.String())
 	}
-	if !strings.Contains(out.String(), "N/A") {
-		t.Errorf("stdout should show N/A: %q", out.String())
+	if strings.Contains(out.String(), "CRAP Report") {
+		t.Errorf("fail-closed run should print no report:\n%s", out.String())
+	}
+}
+
+func TestRun_EmptyCoverageExits1(t *testing.T) {
+	root, src, cov := setupProject(t, true)
+	if err := os.WriteFile(cov, []byte("mode: atomic\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := runWithRoot([]string{"-coverage", cov, src}, root, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "no coverage records") {
+		t.Errorf("stderr missing empty-coverage message: %q", errOut.String())
+	}
+}
+
+func TestRun_EmptyLcovCoverageExits1(t *testing.T) {
+	root, src, _ := setupProject(t, true)
+	info := filepath.Join(root, "cover.info")
+	if err := os.WriteFile(info, []byte("TN:covered\nend_of_record\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var out, errOut bytes.Buffer
+	code := runWithRoot([]string{"-coverage", info, src}, root, &out, &errOut)
+	if code != 1 {
+		t.Fatalf("code = %d, want 1; stderr=%s", code, errOut.String())
+	}
+	if !strings.Contains(errOut.String(), "no coverage records") {
+		t.Errorf("stderr missing empty-coverage message: %q", errOut.String())
 	}
 }
 
@@ -310,6 +341,21 @@ func writeAnalyzedFile(t *testing.T, root, rel, fn string) {
 	}
 }
 
+// writeCoverProfile writes the default coverage profile under root: any
+// report run needs one (coverage is required since the fail-closed default).
+func writeCoverProfile(t *testing.T, root, body string) {
+	t.Helper()
+	if err := os.WriteFile(filepath.Join(root, "coverage.out"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// coveredFn is one fully covered single-statement block spanning fn's body
+// (lines 3-5 in writeAnalyzedFile's source).
+func coveredFn(file string) string {
+	return file + ":3.1,5.2 1 1\n"
+}
+
 func runGit(t *testing.T, root string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", append([]string{"-C", root}, args...)...)
@@ -355,6 +401,8 @@ func TestRun_DiffBaseKeepsChangedAndDropsDeletedOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "calc.go"), []byte(diffBaseEdited), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Edited file: Hot spans 3-5, Cold 7-10.
+	writeCoverProfile(t, root, "mode: atomic\ncalc.go:3.1,5.2 1 1\ncalc.go:7.1,10.2 2 1\n")
 	var out, errOut bytes.Buffer
 	code := runWithRoot([]string{"--diff-base", "HEAD"}, root, &out, &errOut)
 	if code != 0 {
@@ -377,6 +425,7 @@ func TestRun_DiffBaseRenameUsesNewPath(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "moved.go"), []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	writeCoverProfile(t, root, "mode: atomic\n"+coveredFn("moved.go"))
 	var out, errOut bytes.Buffer
 	code := runWithRoot([]string{"--diff-base", "HEAD"}, root, &out, &errOut)
 	if code != 0 {
@@ -402,6 +451,7 @@ func TestRun_DiffBaseWithPathsScopes(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	writeCoverProfile(t, root, "mode: atomic\n"+coveredFn("a.go")+coveredFn("b.go"))
 	var out, errOut bytes.Buffer
 	code := runWithRoot([]string{"--diff-base", "HEAD", "a.go"}, root, &out, &errOut)
 	if code != 0 {
@@ -460,6 +510,7 @@ func TestRun_ExcludeDropsMatchedFiles(t *testing.T) {
 	root := t.TempDir()
 	writeAnalyzedFile(t, root, "a.go", "AFunc")
 	writeAnalyzedFile(t, root, "sub/b.go", "BFunc")
+	writeCoverProfile(t, root, "mode: atomic\n"+coveredFn("a.go")+coveredFn("sub/b.go"))
 	var out, errOut bytes.Buffer
 	code := runWithRoot([]string{"--exclude", "sub/*"}, root, &out, &errOut)
 	if code != 0 {
@@ -501,6 +552,8 @@ func TestRun_DiffBaseOutsideFunctionsExits0(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte(edited), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	// Edited file: Only spans 5-7; the diff touches only the line-3 comment.
+	writeCoverProfile(t, root, "mode: atomic\na.go:5.1,7.2 1 1\n")
 	var out, errOut bytes.Buffer
 	code := runWithRoot([]string{"--diff-base", "HEAD"}, root, &out, &errOut)
 	if code != 0 {
