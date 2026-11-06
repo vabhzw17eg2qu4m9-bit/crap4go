@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.28.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.27.0...v0.28.0) (2026-11-06)
+
+
+### Features
+
+* lcov coverage input, --diff-base, --strict, --exclude on the CRAP command ([#64](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/64)) ([3ef16e1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/3ef16e14bd7268cadc6d824ff9c3905a1383c2f0))
+
 ## [0.27.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.26.0...v0.27.0) (2026-10-30)
 
 
