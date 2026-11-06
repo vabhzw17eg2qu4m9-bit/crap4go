@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.28.0...v1.0.0) (2026-11-06)
+
+
+### ⚠ BREAKING CHANGES
+
+* the CRAP command fails closed on missing/empty coverage input (exit 1) instead of warning and reporting N/A rows.
+
+### Features
+
+* require unit-test coverage by default on the CRAP command ([#66](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/66)) ([d46dee0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/d46dee0c31e7a50648af84437ba81a7df124885d))
+
 ## [0.28.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.27.0...v0.28.0) (2026-11-06)
 
 
