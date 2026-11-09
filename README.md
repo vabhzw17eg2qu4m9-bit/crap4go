@@ -73,7 +73,7 @@ releases printed a warning and reported every method as `N/A`.
 (`file-naming`,
 `nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
 `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
-`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`, `identical-branches`, `collapsible-flow`) dispatch on the first
+`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`, `identical-branches`, `collapsible-flow`, `loc`, `method-size`, `public-docs`, `test-coverage`) dispatch on the first
 argument only; anything else takes the analyze path above.
 
 ```sh
@@ -104,6 +104,12 @@ crap4go identical-branches         # flag duplicate conditions/bodies/chain-oper
 crap4go identical-branches --severity error   # same findings, exit 2
 crap4go collapsible-flow           # flag collapsible nesting: mergeable `if a { if b {} }`, redundant else, terminal-then chains (warning severity, exit 0)
 crap4go collapsible-flow --severity error   # same findings, exit 2
+crap4go loc                        # flag files longer than 800 lines
+crap4go loc --max-lines 500 --exclude 'testdata/**'   # tighter limit, generated data skipped
+crap4go method-size                # flag functions over 60 lines or 6 params (New* constructors: params only)
+crap4go public-docs                # flag exported declarations without a godoc comment
+crap4go test-coverage              # flag total statement coverage below 80%; missing coverage exits 1
+crap4go test-coverage --min-percent 60 --coverage lcov.info   # lcov input, lower bar
 crap4go skill                     # print the crap4go profiling skill for AI agents
 ```
 
@@ -317,6 +323,44 @@ try/finally, and defer is function-scoped. Every finding is correct
 code — the gate trades flatness, not bugs — so it is warning-default
 like string-hazards: `--severity error` exits 2, and findings are
 ignorable via `// ignore:collapsible-flow` / the blanket markers.
+
+`loc` (from crap4dart's `loc`) fails files longer than `--max-lines`
+(default 800) — long files accrete unrelated concerns; split them.
+`--exclude GLOB` (repeatable, shared glob rules) drops files from the
+check and the count. Violations report `N lines > max M`; findings are
+line-less, so they are ignorable via the file markers
+`// ignore-file:loc` / the blanket `// ignore-file:`.
+
+`method-size` (from crap4dart's `method_size`) fails functions longer
+than `--max-lines` (default 60, decl span from the `func` keyword to
+the closing brace) or taking more than `--max-params` parameters
+(default 6, `a, b int` counts as two). New* functions — the Go
+constructor convention — are checked for parameters only, mirroring
+the upstream gate's constructor exemption. Violations carry the
+function start line and the `(Type)Name` display form for methods;
+findings are ignorable via `// ignore:method-size` / the blanket
+markers.
+
+`public-docs` (from crap4dart's `public_docs`) fails exported
+package-level declarations without a godoc comment: functions, methods
+on exported receivers, types, vars, consts. A grouped decl's comment
+covers every spec in the group, and a comment directly above one spec
+covers that spec. New* constructors (upstream exempts constructors) and
+methods on unexported receivers (upstream exempts members of private
+containers) are not public API. `--exclude GLOB` (repeatable) skips
+files; findings are ignorable via `// ignore:public-docs` / the blanket
+markers.
+
+`test-coverage` (from crap4dart's `coverage_gate`) fails when total
+statement coverage drops below `--min-percent` (default 80.0) — the
+same statement-hit ratio the CRAP attribution uses, aggregated over the
+selected files. `--coverage PATH` picks the profile (default
+coverage.out; an `.info` suffix selects the lcov parser). Missing or
+record-less coverage fails closed with exit 1, exactly like the CRAP
+command; `--exclude GLOB` (repeatable) drops files from the ratio, and
+a ratio with no statements left passes (upstream treats an empty
+aggregate as 100%). Not ignorable — it reports one aggregate over the
+coverage input, so source-file markers must not suppress it.
 
 `duplicates` (from 0.2.0, plus dc64e9c's
 per-gate `sources`) tokenizes every scanned file with `go/scanner`
@@ -560,17 +604,22 @@ unknown id.
 
 Suppression is opt-in per gate. crap4go has no config file, so the
 opt-in is the hard-coded registry in `ignorefilter.go` (the host
-adaptation of upstream's `ignorable: true` config flag): the 14 gates
-whose violations carry `file:line` — `complexity`, `nesting`,
+adaptation of upstream's `ignorable: true` config flag): the 19
+ignorable gates — the 16 whose violations carry `file:line` —
+`complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `magic-constants`,
 `test-assertions`, `scattered-constants`, `duplicates`,
 `banned-imports`, `anon-struct-signatures`, `string-hazards`,
-`identical-branches`, `collapsible-flow` — honor
-line and file markers; `file-naming` and `unused-files` (line-less violations) honor
+`identical-branches`, `collapsible-flow`, `method-size`,
+`public-docs` — honor
+line and file markers; `file-naming`, `unused-files`, and `loc`
+(line-less violations) honor
 file markers only. Not ignorable: `folder-structure` (violates
 directories — no lines to read), `similarity` (a suppressed file is
 still named by its cluster peers), `mutation` (count-bearing score
-aggregates would desync from the printed list), and the informational
+aggregates would desync from the printed list), `test-coverage` (one
+aggregate over the coverage input — a source-file marker must not
+suppress it), and the informational
 `memory`/`profile`.
 
 Dogfood: memory's `--badge-threshold` default `500` — the accepted

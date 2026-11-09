@@ -43,7 +43,9 @@ var ignoreFileRule = regexp.MustCompile(`//\s*ignore-file:([^\s/]*)`)
 // folder-structure violates directories (no lines to read),
 // similarity reports clusters whose peers still name a suppressed file,
 // mutation prints count-bearing aggregates that filtering would desync,
-// and memory/profile are informational, never failing.
+// test-coverage reports one aggregate on the coverage input (a source-file
+// marker must not suppress it), and memory/profile are informational,
+// never failing.
 var ignorableGates = map[string]bool{
 	"anon-struct-signatures": true,
 	"banned-imports":         true,
@@ -55,6 +57,9 @@ var ignorableGates = map[string]bool{
 	"identical-branches":     true,
 	"magic-constants":        true,
 	"nesting":                true,
+	"loc":                    true,
+	"method-size":            true,
+	"public-docs":            true,
 	"scattered-constants":    true,
 	"string-hazards":         true,
 	"test-assertions":        true,

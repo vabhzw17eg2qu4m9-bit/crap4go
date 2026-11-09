@@ -107,6 +107,26 @@ Subcommands (must be the first argument):
                                    then, else-if chains after a terminal
                                    then; warning severity by default
                                    (exit 0), --severity error exits 2
+  crap4go loc [--max-lines N] [--exclude GLOB]... [paths...]
+                                   Flag files longer than N lines
+                                   (default 800); exit 2 on violations
+  crap4go method-size [--max-lines N] [--max-params N] [paths...]
+                                   Flag functions longer than N lines
+                                   (default 60) or with more than N
+                                   parameters (default 6); New*
+                                   constructors are checked for params
+                                   only; exit 2 on violations
+  crap4go public-docs [--exclude GLOB]... [paths...]
+                                   Flag exported declarations without a
+                                   godoc comment (New* constructors and
+                                   methods on unexported receivers are
+                                   exempt); exit 2 on violations
+  crap4go test-coverage [--min-percent F] [--coverage PATH]
+                    [--exclude GLOB]... [paths...]
+                                   Flag total statement coverage below F
+                                   (default 80.0) from the coverage
+                                   profile; missing or empty coverage
+                                   fails with exit 1
   crap4go skill                    Print the crap4go profiling skill for AI agents
 
 Note: Go's flag package stops parsing at the first non-flag argument, so all
@@ -148,6 +168,10 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"string-hazards":         RunStringHazardsCommand,
 	"identical-branches":     RunIdenticalBranchesCommand,
 	"collapsible-flow":       RunCollapsibleFlowCommand,
+	"loc":                    RunLocCommand,
+	"method-size":            RunMethodSizeCommand,
+	"public-docs":            RunPublicDocsCommand,
+	"test-coverage":          RunTestCoverageCommand,
 }
 
 // options holds the parsed, validated CLI configuration.
