@@ -328,7 +328,8 @@ ignorable via `// ignore:collapsible-flow` / the blanket markers.
 (default 800) — long files accrete unrelated concerns; split them.
 `--exclude GLOB` (repeatable, shared glob rules) drops files from the
 check and the count. Violations report `N lines > max M`; findings are
-ignorable via `// ignore:loc` / the blanket markers.
+line-less, so they are ignorable via the file markers
+`// ignore-file:loc` / the blanket `// ignore-file:`.
 
 `method-size` (from crap4dart's `method_size`) fails functions longer
 than `--max-lines` (default 60, decl span from the `func` keyword to
@@ -603,14 +604,16 @@ unknown id.
 
 Suppression is opt-in per gate. crap4go has no config file, so the
 opt-in is the hard-coded registry in `ignorefilter.go` (the host
-adaptation of upstream's `ignorable: true` config flag): the 14 gates
-whose violations carry `file:line` — `complexity`, `nesting`,
+adaptation of upstream's `ignorable: true` config flag): the 19
+ignorable gates — the 16 whose violations carry `file:line` —
+`complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `magic-constants`,
 `test-assertions`, `scattered-constants`, `duplicates`,
 `banned-imports`, `anon-struct-signatures`, `string-hazards`,
-`identical-branches`, `collapsible-flow`, `loc`, `method-size`,
+`identical-branches`, `collapsible-flow`, `method-size`,
 `public-docs` — honor
-line and file markers; `file-naming` and `unused-files` (line-less violations) honor
+line and file markers; `file-naming`, `unused-files`, and `loc`
+(line-less violations) honor
 file markers only. Not ignorable: `folder-structure` (violates
 directories — no lines to read), `similarity` (a suppressed file is
 still named by its cluster peers), `mutation` (count-bearing score
