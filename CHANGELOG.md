@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v1.0.0...v1.1.0) (2026-11-09)
+
+
+### Features
+
+* port upstream loc, method-size, public-docs, test-coverage gates ([#68](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/68)) ([d8d9b23](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/d8d9b23922de3b26863b3425360e1549be7c09f9))
+
 ## [1.0.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v0.28.0...v1.0.0) (2026-11-06)
 
 
