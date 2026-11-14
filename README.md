@@ -120,7 +120,17 @@ copy, and prints a timing table (`TOTAL SELF % CALLS MEAN(µs) MAX(µs)
 time and SELF excludes nested profiled calls — flamegraph self-time; TOTAL
 and SELF render with adaptive units `82.50ms` / `13.89s` / `22.50m` /
 `13.89h`; sub-30µs means are marked `~` — instrumentation overhead
-dominates there, so read the CALLS/TOTAL deltas instead). `--top <N>` limits
+dominates there, so read the CALLS/TOTAL deltas instead). The collector
+keeps cumulative per-method stats in memory and writes each writer's own
+atomic shard file (`prof-<pid>-<shard>.json`) — nested exits do no I/O;
+the outermost exit of a call tree always flushes by default, a backstop
+flush every 100000 calls bounds a stuck stack, `CRAP_PROFILE_FLUSH_MS`
+throttles outermost-heavy loops opt-in (bounded tail loss), and a
+`#flushes` diagnostic rides in each shard for tests/debugging. A failed
+test run prints `TESTS FAILED (exit code N)` plus each stream's last 30
+lines and profiling continues with the partial data, so the threshold
+verdict is never mistakable for the test run's own failure.
+`--top <N>` limits
 the console rows (default 20);
 `--threshold <ms>` exits 2 when any method's total exceeds it. Full reports
 are written to `profile-reports/`. `file-naming` reports files whose stems
@@ -156,7 +166,9 @@ reclaimed, `max(0, heap-at-GC-start − live-heap-after-GC)` summed over
 the attributed rows (upstream's reclaimed new-gen); old-gen growth =
 live-heap-after-GC delta vs the previous GC, baseline reset per package
 since each package is its own test binary (upstream's oldAfter−oldBefore;
-retained growth that never frees is the leak suspect). `--format json`
+retained growth is a leak SUSPECT only — much of it is reclaimed on
+teardown, so judge leaks by post-teardown/steady-state growth).
+`--format json`
 keeps stdout JSON-only (progress on stderr); `--top <N>` limits the
 leaderboards (default 20). `--badge <path>` (+ `--badge-threshold` MB,
 default 500) writes a shields-style `memory churn` SVG after the report:
@@ -401,7 +413,10 @@ templates, stale snapshot copies, generated files duplicating their
 sources. Unlike `duplicates` (token-level clone blocks inside Go code),
 each finding says "this file is (mostly) a copy of that file" — reuse,
 generate or delete, not extract-method. Every scanned file becomes a set
-of 8-token shingles of profile-normalized text: markdown files lose
+of 64-bit FNV-1a hashes of 8-token shingles of profile-normalized text
+(separator-terminated tokens, so split-boundary tokenizations differ;
+8 bytes per shingle keep a large tree's index bounded): markdown files
+lose
 their fenced code blocks, source files lose comments and import
 declarations with string/number literals placeholdered (`S`/`N`) so
 literal-only differences never block a match (`.go` files tokenize via
@@ -410,11 +425,19 @@ anything else compares as-is. Pairs cross when Jaccard >= `--jaccard`
 (default 0.8) or containment of the smaller shingle set in the larger
 one >= `--containment` (default 0.95 — catches a small file copied into
 a big one), and transitively crossing pairs merge into clusters
-(union-find). Files with fewer than `--min-shingles` shingles (default
-50) are skipped — tiny files carry no reliable signal. Positional args
+(union-find). Comparisons are candidate-pruned through an inverted
+shingle index — only pairs sharing a shingle hash are compared, with
+postings longer than 100 files skipped as boilerplate — instead of the
+quadratic all-pairs loop that made large trees hang. Files with fewer
+than `--min-shingles` shingles (default 50) are skipped — tiny files
+carry no reliable signal — and a scope matching more than 20000 files
+fails loudly with an actionable message (narrow `include`/`dirs` or
+extend `exclude`) at exit 1, instead of exhausting memory. Positional
+args
 are the directories scanned recursively (default `.`); `--include GLOB`
 (default `**/*.md`) and `--exclude GLOB` (repeatable; default
-`.git/**`, `build/**`, `coverage/**`, `node_modules/**`, `vendor/**`)
+`.git/**`, `.worktrees/**`, `build/**`, `coverage/**`, `node_modules/**`,
+`vendor/**`)
 filter by project-relative path. The default run is the upstream
 ad-hoc explorer — a console (or `--format json`) cluster report that
 always exits 0; `--check` turns it into the gate: one violation line

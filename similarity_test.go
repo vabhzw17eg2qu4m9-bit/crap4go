@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -52,7 +53,8 @@ func writeSimFiles(t *testing.T, files map[string]string) string {
 
 // analyzeSim is analyzeSimilarity with the tests' working thresholds and
 // the shingle floor the measured fixtures clear.
-func analyzeSim(root string, mutate func(*similarityOptions)) SimilarityReport {
+func analyzeSim(t *testing.T, root string, mutate func(*similarityOptions)) SimilarityReport {
+	t.Helper()
 	opts := similarityOptions{
 		dirs:        []string{"."},
 		include:     []string{"**/*.md"},
@@ -64,7 +66,26 @@ func analyzeSim(root string, mutate func(*similarityOptions)) SimilarityReport {
 	if mutate != nil {
 		mutate(&opts)
 	}
-	return analyzeSimilarity(root, opts)
+	report, err := analyzeSimilarity(root, opts)
+	if err != nil {
+		t.Fatalf("analyzeSimilarity: %v", err)
+	}
+	return report
+}
+
+// testHash is FNV-1a 64 over whole tokens, each terminated by the
+// shingle separator — the same byte stream shingleHash consumes. It is
+// both the fixture set builder and the exact-algorithm pin for
+// shingleHash.
+func testHash(tokens ...string) uint64 {
+	var hash uint64 = fnvOffsetBasis64
+	for _, tok := range tokens {
+		for i := range tok {
+			hash = (hash ^ uint64(tok[i])) * fnvPrime64
+		}
+		hash = (hash ^ shingleSeparator) * fnvPrime64
+	}
+	return hash
 }
 
 func TestSimilarityProfileForExtensions(t *testing.T) {
@@ -170,10 +191,10 @@ func TestNineTokensYieldTwoShingles(t *testing.T) {
 }
 
 func TestJaccardAndContainmentMath(t *testing.T) {
-	mk := func(items ...string) map[string]struct{} {
-		set := map[string]struct{}{}
+	mk := func(items ...string) shingleSet {
+		set := shingleSet{}
 		for _, i := range items {
-			set[i] = struct{}{}
+			set[testHash(i)] = struct{}{}
 		}
 		return set
 	}
@@ -200,6 +221,187 @@ func TestJaccardAndContainmentMath(t *testing.T) {
 	}
 }
 
+// TestShingleHashSeparatorAndFNV pins the ad4f27b hash contract: tokens
+// are hash units each terminated by the separator, so ["ab", "c"] and
+// ["a", "bc"] hash differently (the joined-string bug), and the hash is
+// exactly 64-bit FNV-1a over the separator-terminated token stream.
+func TestShingleHashSeparatorAndFNV(t *testing.T) {
+	tail := []string{"t3", "t4", "t5", "t6", "t7", "t8"}
+	abC := shingleHash(append([]string{"ab", "c"}, tail...), 0)
+	aBc := shingleHash(append([]string{"a", "bc"}, tail...), 0)
+	if abC == aBc {
+		t.Errorf("separator unit broken: [ab c] and [a bc] hash identically (%d)", abC)
+	}
+	if got, want := shingleHash([]string{"ab", "c", "t3", "t4", "t5", "t6", "t7", "t8"}, 0),
+		testHash("ab", "c", "t3", "t4", "t5", "t6", "t7", "t8"); got != want {
+		t.Errorf("shingleHash = %d, want plain FNV-1a 64 over separator-terminated tokens (%d)", got, want)
+	}
+	// The same window at a different start hashes identically (the set
+	// key is the hash, not the position).
+	toks := []string{"alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel", "india"}
+	if shingleHash(toks, 0) == shingleHash(toks, 1) {
+		t.Errorf("distinct windows hashed identically")
+	}
+	s1 := shinglesForPath("alpha bravo charlie delta echo foxtrot golf hotel india", "a.txt")
+	if len(s1) != 2 {
+		t.Fatalf("shingle count = %d, want 2", len(s1))
+	}
+	if _, ok := s1[shingleHash(toks, 0)]; !ok {
+		t.Fatalf("shingle set lost the first window hash")
+	}
+	if _, ok := s1[shingleHash(toks, 1)]; !ok {
+		t.Errorf("shingle set lost the second window hash")
+	}
+}
+
+// TestSimilarityPairsEqualsAllPairs is the ad4f27b candidate-equivalence
+// oracle: the inverted-index candidate scan must find exactly the pairs
+// the naive all-pairs loop found — same pair set, same exact scores —
+// on a mixed corpus (duplicates, a transitive chain, Go code, a
+// below-floor file carrying no shingles).
+func TestSimilarityPairsEqualsAllPairs(t *testing.T) {
+	contents := map[string]string{
+		"a.md":    simProseA,
+		"b.md":    simProseA,
+		"ab.md":   simProseA + "\n\n" + simProseC,
+		"c.md":    simProseC,
+		"tiny.md": "too short",
+		"x.go":    "package main\n\nfunc run(w int) int {\n\ttotal := 0\n\tfor i := 0; i < w; i++ {\n\t\ttotal += i * 2\n\t}\n\treturn total\n}\n",
+		"y.go":    "package main\n\nfunc run(w int) int {\n\ttotal := 0\n\tfor i := 0; i < w; i++ {\n\t\ttotal += i * 3\n\t}\n\treturn total\n}\n",
+	}
+	var files []similarityFile
+	for path, content := range contents {
+		files = append(files, similarityFile{path: path, shingles: shinglesForPath(content, path)})
+	}
+	got := similarityPairs(files, 0.4, 0.85)
+	want := naiveAllPairs(files, 0.4, 0.85)
+	if len(got) != len(want) {
+		t.Fatalf("candidate scan found %d pairs, all-pairs found %d:\n got %+v\nwant %+v", len(got), len(want), got, want)
+	}
+	byKey := map[string]SimilarityPair{}
+	for _, p := range want {
+		byKey[p.A+"|"+p.B] = p
+	}
+	for _, p := range got {
+		w, ok := byKey[p.A+"|"+p.B]
+		if !ok {
+			t.Errorf("candidate scan invented pair %+v", p)
+			continue
+		}
+		if p.Jaccard != w.Jaccard || p.Containment != w.Containment {
+			t.Errorf("pair %s|%s scores drifted: (%f, %f) vs all-pairs (%f, %f)",
+				p.A, p.B, p.Jaccard, p.Containment, w.Jaccard, w.Containment)
+		}
+	}
+	// The oracle must have found the real duplicates, or it is vacuous.
+	if _, ok := byKey["a.md|b.md"]; !ok {
+		t.Fatalf("oracle found no a.md/b.md pair — corpus broken: %+v", want)
+	}
+}
+
+// naiveAllPairs is the pre-ad4f27b all-pairs loop, kept here as the
+// equivalence oracle for similarityPairs.
+func naiveAllPairs(files []similarityFile, jaccardThreshold, containmentThreshold float64) []SimilarityPair {
+	var pairs []SimilarityPair
+	for i := 0; i < len(files); i++ {
+		for j := i + 1; j < len(files); j++ {
+			a, b := files[i].shingles, files[j].shingles
+			if len(a) == 0 || len(b) == 0 {
+				continue
+			}
+			shared := intersectionCount(a, b)
+			jac := float64(shared) / float64(len(a)+len(b)-shared)
+			con := float64(shared) / float64(min(len(a), len(b)))
+			if jac < jaccardThreshold && con < containmentThreshold {
+				continue
+			}
+			pairs = append(pairs, SimilarityPair{A: files[i].path, B: files[j].path, Jaccard: jac, Containment: con})
+		}
+	}
+	sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].Jaccard > pairs[j].Jaccard })
+	return pairs
+}
+
+// TestPostingsOverLimitSkippedAsBoilerplate is the ad4f27b postings cap:
+// a shingle hash shared by more than 100 files is boilerplate and its
+// 101-file identical block produces NO pairs, while a genuine duplicate
+// pair in the same corpus is still found through its low-posting
+// shingles.
+func TestPostingsOverLimitSkippedAsBoilerplate(t *testing.T) {
+	boiler := map[string]string{}
+	names := make([]string, 0, 101)
+	for i := 0; i < 101; i++ {
+		name := fmt.Sprintf("boiler%03d.md", i)
+		names = append(names, name)
+		boiler[name] = simProseC
+	}
+	root := writeSimFiles(t, boiler)
+	report := analyzeSim(t, root, nil)
+	if !report.Clean() {
+		t.Errorf("101 identical boilerplate files clustered: %+v", report.Pairs)
+	}
+
+	boiler["a.md"], boiler["b.md"] = simProseA, simProseA
+	root = writeSimFiles(t, boiler)
+	report = analyzeSim(t, root, nil)
+	if len(report.Pairs) != 1 || report.Pairs[0].A != "a.md" || report.Pairs[0].B != "b.md" {
+		t.Errorf("real duplicate lost among boilerplate: %+v", report.Pairs)
+	}
+}
+
+// TestScanCapFailsLoudly is the ad4f27b memory guard: a scope matching
+// more than 20000 files must fail with the actionable error — through
+// the analyzer (error) and through the command (exit 1, the port's
+// usage-error convention, message on stderr naming the narrowing).
+func TestScanCapFailsLoudly(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < similarityMaxScanFiles+1; i++ {
+		name := filepath.Join(root, fmt.Sprintf("big%05d.md", i))
+		if err := os.WriteFile(name, []byte("cap fixture"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_, err := analyzeSimilarity(root, similarityOptions{
+		dirs: []string{"."}, include: []string{"**/*.md"}, exclude: []string{".git/**"},
+		jaccard: 0.8, containment: 0.95, minShingles: 50,
+	})
+	if err == nil {
+		t.Fatal("analyzeSimilarity accepted a scope above the cap")
+	}
+	if !strings.Contains(err.Error(), fmt.Sprintf("above the %d-file safety cap", similarityMaxScanFiles)) ||
+		!strings.Contains(err.Error(), "narrow include/dirs or extend exclude") {
+		t.Errorf("error lacks the actionable guidance: %v", err)
+	}
+	stdout, stderr, code := runSimilarity(t, root, "--check")
+	if code != 1 {
+		t.Errorf("exit = %d, want 1 (usage-error convention)", code)
+	}
+	if strings.Contains(stdout+stderr, "0 files scanned") || !strings.Contains(stderr, "safety cap") {
+		t.Errorf("stderr must carry the cap message, stdout stay clean:\nstdout: %s\nstderr: %s", stdout, stderr)
+	}
+}
+
+// TestWorktreesExcludedByDefault pins the ad4f27b default-exclude
+// addition: a duplicate inside .worktrees/ never enters the default
+// scan (fleet worktree checkouts would otherwise flood the report).
+func TestWorktreesExcludedByDefault(t *testing.T) {
+	root := writeSimFiles(t, map[string]string{
+		"a.md":               simProseA,
+		"b.md":               simProseA,
+		".worktrees/wt/a.md": simProseA,
+	})
+	stdout, _, code := runSimilarity(t, root, "--check", "--jaccard", "0.5", "--min-shingles", "10")
+	if code != 2 {
+		t.Fatalf("exit = %d, want 2", code)
+	}
+	if strings.Contains(stdout, ".worktrees") {
+		t.Errorf("worktree file scanned: %s", stdout)
+	}
+	if !strings.Contains(stdout, "2 files in 1 similar-file clusters (2 scanned)") {
+		t.Errorf("unexpected report:\n%s", stdout)
+	}
+}
+
 func diff(a, b float64) bool { return a < b-1e-9 || a > b+1e-9 }
 
 func containsAll(haystack string, needles ...string) bool {
@@ -213,7 +415,7 @@ func containsAll(haystack string, needles ...string) bool {
 
 func TestExactDuplicatesCluster(t *testing.T) {
 	root := writeSimFiles(t, map[string]string{"a.md": simProseA, "b.md": simProseA})
-	report := analyzeSim(root, nil)
+	report := analyzeSim(t, root, nil)
 	if report.Scanned != 2 {
 		t.Errorf("scanned = %d, want 2", report.Scanned)
 	}
@@ -233,7 +435,7 @@ func TestNearDuplicateCrossesUnrelatedDoesNot(t *testing.T) {
 	root := writeSimFiles(t, map[string]string{
 		"a.md": simProseA, "b.md": simProseB, "c.md": simProseC,
 	})
-	report := analyzeSim(root, nil)
+	report := analyzeSim(t, root, nil)
 	if len(report.Pairs) != 1 {
 		t.Fatalf("pairs = %+v, want exactly the a/b pair", report.Pairs)
 	}
@@ -265,7 +467,7 @@ func TestTransitiveChainMergesIntoOneCluster(t *testing.T) {
 		"ab.md": simProseA + "\n\n" + simProseC,
 		"c.md":  simProseC,
 	})
-	report := analyzeSim(root, func(o *similarityOptions) {
+	report := analyzeSim(t, root, func(o *similarityOptions) {
 		o.jaccard, o.containment = 0.4, 0.9
 	})
 	if len(report.Pairs) != 2 {
@@ -290,7 +492,7 @@ func TestContainmentCatchesSmallCopiedIntoBig(t *testing.T) {
 		"small.md": simProseA,
 		"big.md":   simProseA + "\n\n" + simProseC + "\n\n" + simProseB,
 	})
-	report := analyzeSim(root, func(o *similarityOptions) {
+	report := analyzeSim(t, root, func(o *similarityOptions) {
 		o.jaccard, o.containment = 0.9, 0.85
 	})
 	if len(report.Pairs) != 1 {
@@ -321,7 +523,7 @@ func TestMarkdownFencesDoNotInflateMatches(t *testing.T) {
 		"a.md": fenceX + simProseA,
 		"b.md": fenceY + simProseA,
 	})
-	report := analyzeSim(root, nil)
+	report := analyzeSim(t, root, nil)
 	if len(report.Pairs) != 1 || report.Pairs[0].Jaccard != 1.0 {
 		t.Errorf("pairs = %+v, want one jaccard-1.0 pair (fences normalized away)", report.Pairs)
 	}
@@ -341,7 +543,7 @@ func TestGoLiteralsAndImportsDontBlockMatch(t *testing.T) {
 	goB = strings.ReplaceAll(goB, "total += i * 2", "total += i * 3")
 	root := writeSimFiles(t, map[string]string{"a.go": goA, "b.go": goB})
 	// Literal 2 → 3 is the only body difference: token N/N placeholdered.
-	report := analyzeSim(root, func(o *similarityOptions) {
+	report := analyzeSim(t, root, func(o *similarityOptions) {
 		o.include = []string{"**/*.go"}
 		o.minShingles = 10
 	})
@@ -357,7 +559,7 @@ func TestMetricsForReturnsStrongestPair(t *testing.T) {
 	root := writeSimFiles(t, map[string]string{
 		"a.md": simProseA, "b.md": simProseA, "c.md": simProseC,
 	})
-	report := analyzeSim(root, nil)
+	report := analyzeSim(t, root, nil)
 	jac, con, ok := report.MetricsFor("a.md")
 	if !ok || jac != 1.0 || con != 1.0 {
 		t.Errorf("metricsFor(a.md) = (%f, %f, %v)", jac, con, ok)
@@ -373,7 +575,7 @@ func TestSkippedBelowShingleFloor(t *testing.T) {
 		"a.md":    simProseA,
 		"c.md":    simProseC,
 	})
-	report := analyzeSim(root, func(o *similarityOptions) { o.minShingles = 20 })
+	report := analyzeSim(t, root, func(o *similarityOptions) { o.minShingles = 20 })
 	if report.Scanned != 2 || report.Skipped != 1 {
 		t.Errorf("scanned = %d, skipped = %d, want 2/1", report.Scanned, report.Skipped)
 	}
@@ -384,7 +586,7 @@ func TestExcludeGlobDropsFiles(t *testing.T) {
 		"a.md":           simProseA,
 		"generated/b.md": simProseA,
 	})
-	report := analyzeSim(root, func(o *similarityOptions) { o.exclude = []string{"generated/**"} })
+	report := analyzeSim(t, root, func(o *similarityOptions) { o.exclude = []string{"generated/**"} })
 	if report.Scanned != 1 || !report.Clean() {
 		t.Errorf("scanned = %d, clean = %v, want 1/true", report.Scanned, report.Clean())
 	}
@@ -395,7 +597,7 @@ func TestIncludeGlobLimitsScan(t *testing.T) {
 		"a.md":  simProseA,
 		"a.txt": simProseA,
 	})
-	report := analyzeSim(root, func(o *similarityOptions) { o.include = []string{"*.txt"} })
+	report := analyzeSim(t, root, func(o *similarityOptions) { o.include = []string{"*.txt"} })
 	if report.Scanned != 1 {
 		t.Errorf("scanned = %d, want 1", report.Scanned)
 	}
@@ -403,7 +605,7 @@ func TestIncludeGlobLimitsScan(t *testing.T) {
 
 func TestCleanCorpusReportsClean(t *testing.T) {
 	root := writeSimFiles(t, map[string]string{"a.md": simProseA, "c.md": simProseC})
-	report := analyzeSim(root, nil)
+	report := analyzeSim(t, root, nil)
 	if !report.Clean() || len(report.Clusters) != 0 {
 		t.Errorf("clean corpus reported %+v", report)
 	}

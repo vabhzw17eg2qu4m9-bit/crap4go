@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -9,6 +11,7 @@ import (
 	"go/token"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -307,8 +310,50 @@ func writeCollectors(collectors map[string]string) error {
 // runInstrumentedTests runs `go test -count=1` in dir with the collector
 // output directory in the environment. -count=1 bypasses Go's test cache,
 // which would otherwise skip running the instrumented binaries.
+//
+// The streams tee through live so long runs keep showing progress, and a
+// failed test run is reported with the explicit TESTS FAILED marker plus
+// the LAST 30 lines of each stream (ported from upstream ad4f27b) — but
+// it is not fatal: profiling continues with the partial data, so the
+// command's threshold verdict below is never mistakable for the test
+// run's own failure. Errors that mean the go tool itself could not run
+// still abort.
 func runInstrumentedTests(root, dir, outDir string, opts profileOptions, stdout, stderr io.Writer) error {
-	return runGoTests(dir, profileTestArgs(root, opts), append(os.Environ(), "CRAP_PROFILE_DIR="+outDir), stdout, stderr)
+	var outBuf, errBuf bytes.Buffer
+	err := runGoTests(dir, profileTestArgs(root, opts), append(os.Environ(), "CRAP_PROFILE_DIR="+outDir),
+		io.MultiWriter(stdout, &outBuf), io.MultiWriter(stderr, &errBuf))
+	var exitErr *exec.ExitError
+	if err != nil && !errors.As(err, &exitErr) {
+		return err
+	}
+	if exitErr != nil {
+		reportTestFailure(exitErr.ExitCode(), outBuf.String(), errBuf.String(), stderr)
+	}
+	return nil
+}
+
+// reportTestFailure prints the explicit TESTS FAILED marker plus the
+// last 30 lines of each stream to stderr. The tail, not the head: test
+// runners print progress lines for every file before the failure, so
+// the actual error lives at the tail.
+func reportTestFailure(exitCode int, stdoutText, stderrText string, stderr io.Writer) {
+	fmt.Fprintf(stderr,
+		"TESTS FAILED (exit code %d) — profiling data may be incomplete; this is separate from any threshold verdict below.\n",
+		exitCode)
+	for _, text := range []string{stderrText, stdoutText} {
+		if trimmed := strings.Trim(text, "\n"); trimmed != "" {
+			fmt.Fprintf(stderr, "%s\n", tailLines(trimmed, 30))
+		}
+	}
+}
+
+// tailLines returns the last n lines of text.
+func tailLines(text string, n int) string {
+	lines := strings.Split(text, "\n")
+	if len(lines) <= n {
+		return text
+	}
+	return strings.Join(lines[len(lines)-n:], "\n")
 }
 
 // profileTestArgs builds the `go test` argv. Explicit paths (remapped into
@@ -347,8 +392,12 @@ func remapProfilePaths(root string, paths []string) []string {
 	return remapped
 }
 
-// readTimings aggregates the collectors' prof-*.jsonl logs in dir into
-// per-key timing stats. A missing dir yields an empty map.
+// readTimings merges the collectors' prof-*.json shard files in dir into
+// per-key timing stats. Shards hold one writer's (process × package
+// instance) cumulative snapshot, so calls and totals are summed —
+// summing cannot double-count — minima are minimized and maxima
+// maximized; '#'-prefixed diagnostics (e.g. #flushes) are skipped. A
+// missing dir yields an empty map.
 func readTimings(dir string) map[string]*timingStats {
 	stats := map[string]*timingStats{}
 	entries, err := os.ReadDir(dir)
@@ -356,61 +405,55 @@ func readTimings(dir string) map[string]*timingStats {
 		return stats
 	}
 	for _, e := range entries {
-		if strings.HasSuffix(e.Name(), ".jsonl") {
-			aggregateTimingFile(filepath.Join(dir, e.Name()), stats)
+		name := e.Name()
+		if isTimingShard(name) {
+			mergeTimingShard(filepath.Join(dir, name), stats)
 		}
 	}
 	return stats
 }
 
-// aggregateTimingFile folds one collector log into stats.
-func aggregateTimingFile(path string, stats map[string]*timingStats) {
+// isTimingShard reports whether name is a collector shard file:
+// prof-*.json, excluding in-flight .tmp. files.
+func isTimingShard(name string) bool {
+	return strings.HasPrefix(name, "prof-") &&
+		strings.HasSuffix(name, ".json") &&
+		!strings.Contains(name, ".tmp.")
+}
+
+// mergeTimingShard decodes one shard's JSON map and folds it into stats.
+// Corrupt or non-map content is skipped (a concurrent rename can leave a
+// reader mid-file; the remaining shards still report).
+func mergeTimingShard(path string, stats map[string]*timingStats) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return
 	}
-	for _, line := range strings.Split(string(data), "\n") {
-		key, micros, self, ok := splitTimingLine(line)
-		if ok {
-			mergeTiming(stats, key, micros, self)
+	var shard map[string]*timingStats
+	if json.Unmarshal(data, &shard) != nil {
+		return
+	}
+	for key, s := range shard {
+		if s == nil || strings.HasPrefix(key, "#") {
+			continue
 		}
+		mergeTimingStats(stats, key, s)
 	}
 }
 
-// splitTimingLine parses one "<key>\t<inclusive>\t<self>" log line.
-func splitTimingLine(line string) (string, int64, int64, bool) {
-	key, rest, found := strings.Cut(line, "\t")
-	if !found || key == "" {
-		return "", 0, 0, false
-	}
-	inclusiveStr, selfStr, found := strings.Cut(rest, "\t")
-	if !found {
-		return "", 0, 0, false
-	}
-	inclusive, err := strconv.ParseInt(inclusiveStr, 10, 64)
-	if err != nil {
-		return "", 0, 0, false
-	}
-	self, err := strconv.ParseInt(selfStr, 10, 64)
-	if err != nil {
-		return "", 0, 0, false
-	}
-	return key, inclusive, self, true
-}
-
-// mergeTiming folds one recorded call (inclusive and self time) into the
-// per-key aggregate.
-func mergeTiming(stats map[string]*timingStats, key string, micros, self int64) {
-	s := stats[key]
-	if s == nil {
-		s = &timingStats{MinMicros: micros}
+// mergeTimingStats folds one shard's cumulative stats into the merged
+// map: calls and totals sum, min minimizes, max maximizes.
+func mergeTimingStats(stats map[string]*timingStats, key string, s *timingStats) {
+	into := stats[key]
+	if into == nil {
 		stats[key] = s
+		return
 	}
-	s.Calls++
-	s.TotalMicros += micros
-	s.TotalSelfMicros += self
-	s.MinMicros = min(s.MinMicros, micros)
-	s.MaxMicros = max(s.MaxMicros, micros)
+	into.Calls += s.Calls
+	into.TotalMicros += s.TotalMicros
+	into.TotalSelfMicros += s.TotalSelfMicros
+	into.MinMicros = min(into.MinMicros, s.MinMicros)
+	into.MaxMicros = max(into.MaxMicros, s.MaxMicros)
 }
 
 // attributeTimings matches timing keys to the project's method inventory

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"go/scanner"
 	"go/token"
 	"io/fs"
@@ -43,8 +44,10 @@ const (
 var (
 	defaultSimInclude = []string{"**/*.md"}
 	// defaultSimExclude is the upstream list with .dart_tool replaced by
-	// vendor/** (the Go port's standard exclusion, as in duplicates).
-	defaultSimExclude = []string{".git/**", "build/**", "coverage/**", "node_modules/**", "vendor/**"}
+	// vendor/** (the Go port's standard exclusion, as in duplicates);
+	// .worktrees/** keeps fleet worktree checkouts out of the scan
+	// (upstream ad4f27b).
+	defaultSimExclude = []string{".git/**", ".worktrees/**", "build/**", "coverage/**", "node_modules/**", "vendor/**"}
 )
 
 var markdownExtensions = map[string]bool{".md": true, ".markdown": true, ".mdx": true}
@@ -88,11 +91,37 @@ var simNumberStart = regexp.MustCompile(`^\d`)
 // signal is actual content.
 type similarityProfile int
 
-// shingleSet is a set of shingle strings: the similarity scan's shared
-// shape, promoted to a named type so signatures reference a name instead
-// of the map[string]struct{} set idiom (an anonymous struct type in a
-// signature — see the anon-struct-signatures gate).
-type shingleSet map[string]struct{}
+// shingleHash is the 64-bit FNV-1a of the shingleSize tokens starting
+// at start, each terminated by a separator unit so ["ab", "c"] and
+// ["a", "bc"] hash differently. Hashing keeps 8 bytes per shingle
+// instead of the full joined token string — the shingle sets of a
+// large tree otherwise retain multi-GB of strings (upstream #34).
+// Go's native uint64 is exact 64-bit; the upstream Dart port masks the
+// sign bit for cross-platform parity with web's doubles, a mask Go has
+// no need for.
+const (
+	fnvOffsetBasis64 = 0xcbf29ce484222325
+	fnvPrime64       = 0x100000001b3
+	// shingleSeparator terminates every token inside the hash input.
+	shingleSeparator = 0x1f
+)
+
+func shingleHash(tokens []string, start int) uint64 {
+	var hash uint64 = fnvOffsetBasis64
+	for _, tok := range tokens[start : start+shingleSize] {
+		for i := range tok {
+			hash = (hash ^ uint64(tok[i])) * fnvPrime64
+		}
+		hash = (hash ^ shingleSeparator) * fnvPrime64
+	}
+	return hash
+}
+
+// shingleSet is a set of 64-bit FNV-1a shingle hashes: the similarity
+// scan's shared shape, promoted to a named type so signatures reference
+// a name instead of the map[uint64]struct{} set idiom (an anonymous
+// struct type in a signature — see the anon-struct-signatures gate).
+type shingleSet map[uint64]struct{}
 
 // similarityFile is one analyzed file: its project-relative path and
 // shingle set.
@@ -372,7 +401,7 @@ func shinglesForPath(content, path string) shingleSet {
 		return set
 	}
 	for i := 0; i+shingleSize <= len(tokens); i++ {
-		set[strings.Join(tokens[i:i+shingleSize], "\x1f")] = struct{}{}
+		set[shingleHash(tokens, i)] = struct{}{}
 	}
 	return set
 }
@@ -437,15 +466,35 @@ func (r SimilarityReport) MetricsFor(path string) (jaccard, containment float64,
 	return 0, 0, false
 }
 
+// similarityMaxScanFiles is the hard ceiling on the number of files one
+// scan analyzes. Beyond this the scope is almost certainly an
+// over-broad include/dirs selection (vendored checkouts, generated
+// corpora) that would exhaust memory on the shingle index;
+// analyzeSimilarity fails loudly instead of crashing the whole check
+// run (upstream ad4f27b).
+const similarityMaxScanFiles = 20000
+
+// simMaxPostings bounds candidate generation: a shingle hash shared by
+// more files than this carries no duplicate signal (boilerplate) and is
+// skipped when building pair candidates.
+const simMaxPostings = 100
+
 // analyzeSimilarity scans dirs (project-relative, recursive) under root,
 // keeping files matching include and dropping exclude globs. Files with
 // fewer than minShingles shingles are skipped — tiny files carry no
 // reliable signal. Pairs cross when Jaccard ≥ jaccard OR containment ≥
-// containment.
-func analyzeSimilarity(root string, opts similarityOptions) SimilarityReport {
+// containment. An error returns when the scan scope matches more than
+// similarityMaxScanFiles files.
+func analyzeSimilarity(root string, opts similarityOptions) (SimilarityReport, error) {
+	paths := collectSimilarityFiles(root, opts.dirs, opts.include, opts.exclude)
+	if len(paths) > similarityMaxScanFiles {
+		return SimilarityReport{}, fmt.Errorf(
+			"similarity scan scope matches %d files, above the %d-file safety cap: narrow include/dirs or extend exclude",
+			len(paths), similarityMaxScanFiles)
+	}
 	var analyzed []similarityFile
 	skipped := 0
-	for _, path := range collectSimilarityFiles(root, opts.dirs, opts.include, opts.exclude) {
+	for _, path := range paths {
 		data, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(path)))
 		if err != nil {
 			skipped++
@@ -464,7 +513,7 @@ func analyzeSimilarity(root string, opts similarityOptions) SimilarityReport {
 		Skipped:  skipped,
 		Pairs:    pairs,
 		Clusters: similarityClusters(analyzed, pairs),
-	}
+	}, nil
 }
 
 // collectSimilarityFiles lists the non-excluded files matching include
@@ -510,25 +559,83 @@ func collectSimilarityDir(root, abs string, include, exclude []string, seen map[
 }
 
 // similarityPairs returns all pairs crossing either threshold, strongest
-// first. Intersection is computed once per pair.
+// first. Comparisons are candidate-pruned through an inverted shingle
+// index: a pair can only cross a positive threshold when the two files
+// share at least one shingle hash, so exact Jaccard/containment run on
+// candidate pairs only. The naive all-pairs loop is quadratic in the
+// file count and made large trees effectively hang (upstream #34).
 func similarityPairs(files []similarityFile, jaccardThreshold, containmentThreshold float64) []SimilarityPair {
 	var pairs []SimilarityPair
-	for i := 0; i < len(files); i++ {
-		for j := i + 1; j < len(files); j++ {
-			a, b := files[i].shingles, files[j].shingles
-			if len(a) == 0 || len(b) == 0 {
-				continue
-			}
-			shared := intersectionCount(a, b)
-			jac := float64(shared) / float64(len(a)+len(b)-shared)
-			con := float64(shared) / float64(min(len(a), len(b)))
-			if jac < jaccardThreshold && con < containmentThreshold {
-				continue
-			}
-			pairs = append(pairs, SimilarityPair{A: files[i].path, B: files[j].path, Jaccard: jac, Containment: con})
+	for _, c := range similarityCandidates(files) {
+		a, b := files[c[0]].shingles, files[c[1]].shingles
+		shared := intersectionCount(a, b)
+		jac := float64(shared) / float64(len(a)+len(b)-shared)
+		con := float64(shared) / float64(min(len(a), len(b)))
+		if jac < jaccardThreshold && con < containmentThreshold {
+			continue
 		}
+		pairs = append(pairs, SimilarityPair{A: files[c[0]].path, B: files[c[1]].path, Jaccard: jac, Containment: con})
 	}
 	sort.SliceStable(pairs, func(i, j int) bool { return pairs[i].Jaccard > pairs[j].Jaccard })
+	return pairs
+}
+
+// similarityCandidates returns the unique index pairs of files sharing
+// at least one shingle hash. Postings shorter than two files carry no
+// pair; postings longer than simMaxPostings are boilerplate (license
+// headers, generated scaffolds) with no duplicate signal and are
+// skipped. Hash iteration is ordered by hash value, so the candidate
+// order is deterministic across runs.
+func similarityCandidates(files []similarityFile) [][2]int {
+	index := similarityInvertedIndex(files)
+	hashes := make([]uint64, 0, len(index))
+	for hash := range index {
+		hashes = append(hashes, hash)
+	}
+	sort.Slice(hashes, func(i, j int) bool { return hashes[i] < hashes[j] })
+	seen := map[int64]bool{}
+	var candidates [][2]int
+	for _, hash := range hashes {
+		postings := index[hash]
+		if len(postings) < 2 || len(postings) > simMaxPostings {
+			continue
+		}
+		candidates = append(candidates, similarityPostingsPairs(postings, len(files), seen)...)
+	}
+	return candidates
+}
+
+// similarityInvertedIndex maps every shingle hash to the sorted file
+// indices containing it.
+func similarityInvertedIndex(files []similarityFile) map[uint64][]int {
+	index := map[uint64][]int{}
+	for i, f := range files {
+		for hash := range f.shingles {
+			index[hash] = append(index[hash], i)
+		}
+	}
+	for _, postings := range index {
+		sort.Ints(postings)
+	}
+	return index
+}
+
+// similarityPostingsPairs emits the unique pairs within one postings
+// list, skipping pairs already emitted for another shared hash (tracked
+// via seen of flattened i*width+j keys that grow with the candidate
+// count, not the quadratic pair space).
+func similarityPostingsPairs(postings []int, width int, seen map[int64]bool) [][2]int {
+	var pairs [][2]int
+	for x := range len(postings) {
+		for y := x + 1; y < len(postings); y++ {
+			key := int64(postings[x])*int64(width) + int64(postings[y])
+			if seen[key] {
+				continue
+			}
+			seen[key] = true
+			pairs = append(pairs, [2]int{postings[x], postings[y]})
+		}
+	}
 	return pairs
 }
 

@@ -66,9 +66,11 @@ const (
 //   - oldGrowth = live-heap-after-GC delta vs the previous GC, baseline
 //     0 for each test binary's first GC (upstream: oldAfter - oldBefore;
 //     Go has no old-gen field in the trace, so retained-heap growth
-//     across GCs is the analog — positive and never freed = leak
-//     suspect). The baseline resets per package: each package runs as
-//     its own test binary (same reason upstream never merges isolates).
+//     across GCs is the analog — positive growth is a leak SUSPECT
+//     only: much of it is reclaimed on teardown, so judge leaks by
+//     post-teardown/steady-state growth, never by this number alone).
+//     The baseline resets per package: each package runs as its own
+//     test binary (same reason upstream never merges isolates).
 //
 // Attribution windows (the interleaving rules; sequential `-p 1`):
 //   - `=== RUN <name>` opens a window; subtests nest inside parents.
@@ -277,7 +279,9 @@ func (r *memoryReport) topChurn() []*memoryEntry {
 }
 
 // topOldGrowth returns tests with GC activity sorted by old-gen growth,
-// descending (leak suspects first).
+// descending (leak suspects first — suspects only: positive growth in
+// the window is often reclaimed on teardown, so confirm a leak by
+// post-teardown/steady-state growth).
 func (r *memoryReport) topOldGrowth() []*memoryEntry {
 	return topBy(r.tests, func(e *memoryEntry) float64 { return e.oldGrowthMb() })
 }
