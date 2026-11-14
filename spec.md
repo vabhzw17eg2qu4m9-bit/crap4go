@@ -215,12 +215,12 @@ timing data. Source instrumentation: the module is copied to
 collector owns a per-goroutine call stack of open frames (goroutine ids
 parsed from `runtime.Stack`), and the deferred exit reports the call on
 every return path (panics included) on the registering goroutine — plus a
-small generated collector per package that appends each call to a
-per-process log (`go test` runs each package as its own binary, so no
-cross-process locking is needed). `go test -count=1`
-runs against the copy (`-count=1` bypasses Go's test cache, which would
-otherwise skip the instrumented binaries); the temp directory is cleaned up
-automatically after the run (kept when `CRAP_PROFILE_DEBUG` is set).
+small generated collector per package that keeps cumulative per-method
+stats in memory and writes them to shard files on flush (below). `go test
+-count=1` runs against the copy (`-count=1` bypasses Go's test cache,
+which would otherwise skip the instrumented binaries); the temp directory
+is cleaned up automatically after the run (kept when `CRAP_PROFILE_DEBUG`
+is set).
 
 Test selection: `--name` is forwarded to `go test -run`; positional paths
 are forwarded remapped into the instrumented copy (project-relative paths
@@ -245,21 +245,52 @@ match a project method are ignored. Test files (`*_test.go`) are not
 instrumented; unparseable files (e.g. `testdata/` fixtures) are left
 unchanged.
 
-The collector logs every call immediately — one `<key>\t<inclusive>\t<self>`
-line per exit, where self is inclusive minus nested instrumented calls
-that completed while the frame was open — to a per-process file (one per
-test binary / pid, appends serialized by a mutex), so the upstream 0.9.2
-isolate-collision fixes (per-worker temp-file identity around the atomic
-rename, reader retry) do not apply — there is no temp-file/rename dance
-and no buffering whose flush cadence could lose records; the logs are
-read after the test run finishes. Upstream 0.9.5's delta-flush fix is
-likewise N/A here by design: the collector never accumulates or re-merges
-counters — it appends per-call deltas and the host merges each log
-exactly once, so the quadratic calls/total inflation upstream fixed
-cannot occur. Upstream 0.9.5's public `flush()` and
-flush-on-outermost-exit are N/A for the same reason (every call is
-written as it exits, so short runs do not lose their tail), and upstream
-commit b789739 (icon/PNG assets) is branding-only, not ported.
+Flush design (ported from upstream ad4f27b's observer-effect fix; the old
+per-call `<key>\t<inclusive>\t<self>` log append was a file syscall inside
+every instrumented exit, inflating inclusive times in hot loops):
+
+- Each writer — one test binary (pid) × one instrumented package instance —
+  owns a cumulative shard file `prof-<pid>-<shard>.json` (the baked shard
+  id separates package instances sharing a pid; `go test` runs each package
+  as its own binary, so cross-process locking is never needed). A flush
+  replaces the shard atomically (temp + rename) with the writer's full
+  cumulative stats; shards never read other writers' data, so concurrent
+  writers cannot lose each other's updates by design. The host merges all
+  shards once after the run: calls and totals are summed (summing
+  cumulative shards cannot double-count), minima minimized, maxima
+  maximized, and `#`-prefixed diagnostics skipped.
+- Nested method exits touch no filesystem — only the outermost exit of a
+  goroutine's call tree can flush, and it ALWAYS flushes by default: it is
+  the only reliable delivery point (a process dying after its last
+  instrumented call has no other chance to report), so a normal run loses
+  nothing. A flush is O(#methods), never O(#calls).
+- A backstop flush every `CRAP_PROFILE_FLUSH_EVERY` calls (default 100000)
+  bounds the loss when a call stack is stuck non-empty (a leaked frame
+  whose exit never ran) or the process dies mid-tree.
+- `CRAP_PROFILE_FLUSH_MS` (default 0) throttles outermost flushes to at
+  most one per interval — an OPT-IN trade for extremely outermost-heavy
+  loops; the tail after the last throttled exit is lost unless an explicit
+  checkpoint fires. Keep 0 unless that shape actually hurts.
+- Each shard carries a `#flushes` diagnostic key (`{"calls": N}`, 1-based,
+  advanced only on a successful rename) that tests and debugging use to
+  observe flush cadence; the host merge skips it.
+
+Documented divergence from upstream: Dart isolates are threads in one
+process, so upstream shards by boot-time identity hash; Go test binaries
+are one process per package, so the pid separates writers and the baked
+id only separates package instances. Upstream's public `flush()` has no
+Go counterpart — every enter is paired with a deferred exit, so the
+outermost checkpoint is always reached; upstream's 0.9.2
+isolate-collision and 0.9.5 delta-flush fixes are N/A for the shard
+design (no shared-file read-merge, no counter re-merge).
+
+Test failures are not fatal and never masked: `go test` streams through
+live, and a non-zero test exit prints the explicit `TESTS FAILED (exit
+code N)` marker plus the LAST 30 lines of each stream (progress noise
+lives at the head, the actual error at the tail) to stderr, then
+profiling continues with the partial data — the command's own verdict
+(threshold exit 2) is never mistakable for the test run's own failure.
+Only a failure to run the `go` tool at all aborts with exit 1.
 
 ### Profile Report
 
@@ -859,7 +890,12 @@ be in [0,1], `--min-shingles` positive, `--format` console or json —
 violations are usage errors (exit 1).
 
 Engine: every scanned file becomes a set of 8-token shingles
-(`shingleSize`) of profile-normalized text. The profile comes from the
+(`shingleSize`) of profile-normalized text, stored as 64-bit FNV-1a
+shingle hashes (upstream ad4f27b) — each token is hashed with a
+separator terminator so `["ab", "c"]` and `["a", "bc"]` differ, and 8
+bytes per shingle keep the index of a large tree bounded (Go's native
+`uint64` is exact; the upstream Dart port masks the sign bit for web
+parity, a mask Go has no need for). The profile comes from the
 extension: `.md`/`.markdown`/`.mdx` are markdown — fenced code blocks
 are dropped, only prose words compare; the code family (`.dart`, `.js`,
 `.ts`, `.java`, `.py`, `.go`, `.rs`, `.c`, ... the upstream extension
@@ -881,20 +917,37 @@ than one shingle yield an empty set.
 A pair crosses when Jaccard (intersection over union) >= `--jaccard`
 (default 0.8) OR containment (intersection over the smaller set —
 catches a small file largely copied into a big one, where Jaccard stays
-low) >= `--containment` (default 0.95). Files with fewer shingles than
-`--min-shingles` (default 50) are skipped and counted in the report —
-tiny files carry no reliable signal. Crossing pairs merge transitively
-into clusters via union-find with path compression; clusters report
-largest first, pairs strongest (max Jaccard) first, and every file's
-metrics line names the strongest pair it participates in.
+low) >= `--containment` (default 0.95). Comparisons are
+candidate-pruned through an inverted shingle index (upstream ad4f27b):
+only file pairs sharing at least one shingle hash are compared at all —
+a pair that crosses a positive threshold must share a shingle — with
+postings lists longer than 100 files skipped as boilerplate (license
+headers, generated scaffolds carry no duplicate signal). The naive
+all-pairs loop is quadratic in the file count and made large trees
+effectively hang. Files with fewer shingles than `--min-shingles`
+(default 50) are skipped and counted in the report — tiny files carry
+no reliable signal. Crossing pairs merge transitively into clusters via
+union-find with path compression; clusters report largest first, pairs
+strongest (max Jaccard) first, and every file's metrics line names the
+strongest pair it participates in.
+
+A scan scope matching more than 20000 files (`similarityMaxScanFiles`)
+is almost certainly an over-broad `include`/`dirs` selection (vendored
+checkouts, generated corpora) that would exhaust memory on the shingle
+index: the scan fails loudly (upstream ad4f27b) with an actionable
+message — `similarity scan scope matches N files, above the 20000-file
+safety cap: narrow include/dirs or extend exclude` — on stderr, exit 1
+(the port's usage-error convention, same as bad flags).
 
 Scan scope: the positional directories, resolved against the project
 root (absolute paths taken as-is), walked recursively — any file type,
 filtered by include then exclude globs on the project-relative path;
 missing directories are skipped silently. Defaults are the upstream
-gate's: include `**/*.md`, exclude `.git/**`, `build/**`,
-`coverage/**`, `node_modules/**` — with `.dart_tool/**` replaced by
-`vendor/**` (the Go port's standard exclusion, as in `duplicates`).
+gate's: include `**/*.md`, exclude `.git/**`, `.worktrees/**`,
+`build/**`, `coverage/**`, `node_modules/**` — with `.dart_tool/**`
+replaced by `vendor/**` (the Go port's standard exclusion, as in
+`duplicates`; `.worktrees/**` added upstream ad4f27b so fleet worktree
+checkouts never flood the scan).
 Sort order is deterministic: files by path, clusters largest first with
 ties in scan order.
 
@@ -1064,7 +1117,9 @@ per GC):
   baseline resets on every package flush because each package runs as
   its own process (upstream: `oldAfterMb − oldBeforeMb`; Go's trace has
   no old-gen field, so retained-heap growth across GCs is the analog —
-  positive and never freed = leak suspect).
+  positive growth is a leak SUSPECT only: much of it is reclaimed on
+  teardown, so judge leaks by post-teardown/steady-state growth, never
+  by this number alone; upstream ad4f27b wording).
 
 Output: the console format prints a summary line (`, allocated N MB`
 appended when the churn total is above zero), the unattributed bucket

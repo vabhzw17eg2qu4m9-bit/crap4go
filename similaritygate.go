@@ -89,7 +89,14 @@ func RunSimilarityCommand(args []string, root string, stdout, stderr io.Writer) 
 	if !ok {
 		return code
 	}
-	report := analyzeSimilarity(root, opts.similarityOptions)
+	report, err := analyzeSimilarity(root, opts.similarityOptions)
+	if err != nil {
+		// An over-broad scan scope is a fatal config error: the port's
+		// usage-error exit (same convention as bad flags), with the
+		// actionable message on stderr (upstream ad4f27b).
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
 	if opts.check {
 		return reportSimilarityGate(report, opts.similarityOptions, stdout)
 	}

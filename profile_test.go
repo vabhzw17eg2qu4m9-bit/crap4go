@@ -80,60 +80,103 @@ func TestInstrumentSourceParseError(t *testing.T) {
 	}
 }
 
-func TestSplitTimingLine(t *testing.T) {
-	tests := []struct {
-		line         string
-		key          string
-		micros, self int64
-		ok           bool
-	}{
-		{"sample.go|Add\t42\t40", "sample.go|Add", 42, 40, true},
-		{"k\t0\t0", "k", 0, 0, true},
-		{"no-tab", "", 0, 0, false},
-		{"k\t5", "", 0, 0, false},
-		{"\t5\t5", "", 0, 0, false},
-		{"k\tnotanumber\t5", "", 0, 0, false},
-		{"k\t5\tnotanumber", "", 0, 0, false},
-		{"", "", 0, 0, false},
-	}
-	for _, tt := range tests {
-		key, micros, self, ok := splitTimingLine(tt.line)
-		if ok != tt.ok || key != tt.key || micros != tt.micros || self != tt.self {
-			t.Errorf("splitTimingLine(%q) = (%q,%d,%d,%v), want (%q,%d,%d,%v)",
-				tt.line, key, micros, self, ok, tt.key, tt.micros, tt.self, tt.ok)
-		}
-	}
+// shardJSON is a minimal shard document: one method's cumulative stats.
+func shardJSON(calls, total, self, minV, maxV int64) string {
+	return fmt.Sprintf(`{"m": {"calls": %d, "totalMicros": %d, "totalSelfMicros": %d, "minMicros": %d, "maxMicros": %d}}`,
+		calls, total, self, minV, maxV)
 }
 
-func TestMergeTiming(t *testing.T) {
+func TestMergeTimingStatsSumsAndExtremes(t *testing.T) {
 	stats := map[string]*timingStats{}
-	mergeTiming(stats, "a", 10, 8)
-	mergeTiming(stats, "a", 30, 20)
-	mergeTiming(stats, "b", 5, 5)
+	mergeTimingStats(stats, "a", &timingStats{Calls: 2, TotalMicros: 40, TotalSelfMicros: 28, MinMicros: 10, MaxMicros: 30})
+	mergeTimingStats(stats, "a", &timingStats{Calls: 3, TotalMicros: 60, TotalSelfMicros: 55, MinMicros: 15, MaxMicros: 25})
+	mergeTimingStats(stats, "b", &timingStats{Calls: 1, TotalMicros: 5, TotalSelfMicros: 5, MinMicros: 5, MaxMicros: 5})
 	got := stats["a"]
-	if got.Calls != 2 || got.TotalMicros != 40 || got.TotalSelfMicros != 28 ||
+	if got.Calls != 5 || got.TotalMicros != 100 || got.TotalSelfMicros != 83 ||
 		got.MinMicros != 10 || got.MaxMicros != 30 {
-		t.Errorf("merge a = %+v", got)
+		t.Errorf("merged a = %+v, want calls 5 total 100 self 83 min 10 max 30 (sum totals, min minima, max maxima)", got)
 	}
 	if got := stats["b"]; got.Calls != 1 || got.MeanMicros() != 5 || got.TotalSelfMicros != 5 {
-		t.Errorf("merge b = %+v", got)
+		t.Errorf("merged b = %+v", got)
 	}
 }
 
 func TestReadTimings(t *testing.T) {
 	dir := t.TempDir()
-	writeFile(t, filepath.Join(dir, "prof-1.jsonl"), "a\t10\t8\nb\t5\t5\n")
-	writeFile(t, filepath.Join(dir, "prof-2.jsonl"), "a\t20\t15\n")
-	writeFile(t, filepath.Join(dir, "ignore.txt"), "a\t99\t99\n")
+	writeFile(t, filepath.Join(dir, "prof-1-pkg-a.json"), shardJSON(2, 20, 17, 8, 12))
+	// Diagnostics keys are skipped; corrupt shards and in-flight tmp
+	// files and non-prof files are ignored.
+	writeFile(t, filepath.Join(dir, "prof-42-pkg-b.json"), `{"m": {"calls": 1, "totalMicros": 10, "totalSelfMicros": 8, "minMicros": 10, "maxMicros": 10}, "#flushes": {"calls": 3}}`)
+	writeFile(t, filepath.Join(dir, "prof-7-corrupt.json"), "{not json")
+	writeFile(t, filepath.Join(dir, "prof-8-inflight.json.tmp.0"), shardJSON(99, 99, 99, 99, 99))
+	writeFile(t, filepath.Join(dir, "ignore.txt"), shardJSON(99, 99, 99, 99, 99))
 	stats := readTimings(dir)
-	if len(stats) != 2 {
-		t.Fatalf("got %d keys, want 2: %+v", len(stats), stats)
+	if len(stats) != 1 {
+		t.Fatalf("got %d keys, want 1: %+v", len(stats), stats)
 	}
-	if got := stats["a"]; got.Calls != 2 || got.TotalMicros != 30 || got.TotalSelfMicros != 23 || got.MaxMicros != 20 {
-		t.Errorf("a = %+v", got)
+	got := stats["m"]
+	if got == nil || got.Calls != 3 || got.TotalMicros != 30 || got.TotalSelfMicros != 25 ||
+		got.MinMicros != 8 || got.MaxMicros != 12 {
+		t.Fatalf("m = %+v, want the two shards merged (sum calls/totals, min min, max max)", got)
 	}
 	if got := readTimings(filepath.Join(dir, "missing")); len(got) != 0 {
 		t.Errorf("missing dir should yield empty, got %+v", got)
+	}
+}
+
+// TestTailLinesAndReportTestFailure pins the ad4f27b runner contract:
+// a failing test run is reported with the explicit TESTS FAILED marker
+// and the LAST 30 lines of each stream (progress noise lives at the
+// head, the actual error at the tail), so a threshold exit (2) is never
+// mistakable for the test run's own failure.
+func TestTailLinesAndReportTestFailure(t *testing.T) {
+	var lines []string
+	for i := 1; i <= 40; i++ {
+		lines = append(lines, fmt.Sprintf("line-%d", i))
+	}
+	got := tailLines(strings.Join(lines, "\n"), 30)
+	if strings.Contains(got, "line-10") || !strings.Contains(got, "line-11") {
+		t.Errorf("tailLines kept the wrong window: %q", got)
+	}
+	if tailLines("one\ntwo", 30) != "one\ntwo" {
+		t.Errorf("tailLines should keep short texts whole")
+	}
+	var stderr bytes.Buffer
+	reportTestFailure(1, "head\n"+strings.Repeat("x\n", 35)+"actual error tail", "", &stderr)
+	out := stderr.String()
+	if !strings.Contains(out, "TESTS FAILED (exit code 1)") {
+		t.Errorf("missing marker:\n%s", out)
+	}
+	if !strings.Contains(out, "actual error tail") || strings.Contains(out, "head\n") {
+		t.Errorf("stdout tail not reported as the last 30 lines:\n%s", out)
+	}
+}
+
+// TestRunInstrumentedTestsReportsFailureAndContinues is the real-path
+// proof: a failing go test run must NOT abort profiling (nil error) —
+// the marker plus the streams' tail go to stderr and the caller proceeds
+// to read whatever profiling data exists.
+func TestRunInstrumentedTestsReportsFailureAndContinues(t *testing.T) {
+	dir := t.TempDir()
+	writeFile(t, filepath.Join(dir, "go.mod"), "module example.com/failmod\n\ngo 1.22\n")
+	writeFile(t, filepath.Join(dir, "boom_test.go"), `package failmod
+
+import "testing"
+
+func TestBoom(t *testing.T) {
+	t.Fatal("kaboom")
+}
+`)
+	var stdout, stderr bytes.Buffer
+	err := runInstrumentedTests(dir, dir, filepath.Join(dir, "out"), profileOptions{}, &stdout, &stderr)
+	if err != nil {
+		t.Fatalf("test failure must not abort: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "TESTS FAILED (exit code 1)") {
+		t.Errorf("missing TESTS FAILED marker:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "kaboom") {
+		t.Errorf("test error tail missing from stderr:\n%s", stderr.String())
 	}
 }
 
