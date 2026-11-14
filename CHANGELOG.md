@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.1.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v1.1.0...v1.1.1) (2026-11-14)
+
+
+### Performance Improvements
+
+* port upstream ad4f27b large-tree similarity fixes + profiler observer-effect fix ([#70](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/70)) ([eccc500](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/eccc500a88e4e0eb52f14af54149f10f66aa0452))
+
 ## [1.1.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v1.0.0...v1.1.0) (2026-11-09)
 
 
