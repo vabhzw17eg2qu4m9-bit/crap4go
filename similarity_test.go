@@ -273,6 +273,10 @@ func TestSimilarityPairsEqualsAllPairs(t *testing.T) {
 	for path, content := range contents {
 		files = append(files, similarityFile{path: path, shingles: shinglesForPath(content, path)})
 	}
+	// similarity.go's scan order is sorted by path (documented input
+	// invariant); map iteration order is random, so restore the invariant
+	// or the naive oracle's pair orientation varies per run.
+	sort.Slice(files, func(i, j int) bool { return files[i].path < files[j].path })
 	got := similarityPairs(files, 0.4, 0.85)
 	want := naiveAllPairs(files, 0.4, 0.85)
 	if len(got) != len(want) {
