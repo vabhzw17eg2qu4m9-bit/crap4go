@@ -165,7 +165,7 @@ type memoryStreamParser struct {
 	pkgTests []*memoryEntry // this package's tests, pending the `ok` line
 	pending  []gcEvent      // GCs with no open window (loading/teardown)
 	prevLive float64        // live-heap baseline for oldDeltaMb
-	hasPrev  bool
+	hasPrev  bool           // ignore:implicit-state — a deliberate two-role latch: attribute advances the baseline, flush resets it per package
 }
 
 // anchorKind classifies what nextAnchor found in a (possibly torn) line.

@@ -76,7 +76,8 @@ combined). Unknown flags are usage errors.
 `nesting`, `class-size`, `weight-of-class`, `unused-code`, `unused-files`,
 `banned-imports`, `magic-constants`, `test-assertions`, `folder-structure`,
 `anon-struct-signatures`, `scattered-constants`, `duplicates`, `mutation`, `similarity`,
-`string-hazards`, `identical-branches`, `collapsible-flow`)
+`string-hazards`, `identical-branches`, `collapsible-flow`,
+`loc`, `method-size`, `public-docs`, `test-coverage`, `implicit-state`)
 are dispatched on the first argument only, and only on an
 exact match. Any other first argument — flags, paths — takes the analyze path
 unchanged. Subcommand flags:
@@ -810,7 +811,13 @@ Offsets are stored method-relative, so an edit in an earlier method of the
 same file invalidates only that method. The `meta` guard (tool version,
 enabled operator categories, `test_args`) wipes the cache on any mismatch,
 as do a missing, corrupt or outdated-version file. Entries of deleted or
-excluded files are pruned after each run.
+excluded files are pruned after each run. Every discard of a PRESENT cache
+file reports its reason to stderr — `crap4go mutation: mutation cache
+discarded: <reason>` with `corrupt JSON`, `not a JSON object`,
+`version mismatch (expected 1)` or `meta mismatch (operators or test args
+changed)` (port of crap4dart 34e2163080) — a silent full re-run looks
+identical to a warm one and hides config drift; a missing file is a cold
+start, not a discard.
 
 End-of-run tree integrity check (port of crap4dart 8b2e8e8): the engine
 snapshots every file it will mutate before the loop and re-verifies the
@@ -818,7 +825,13 @@ whole tree in an outer finally — even when the loop died mid-mutant. A file
 whose content drifted from its snapshot (external edit, killed process
 between apply and restore) is re-restored and surfaced as
 `; INTEGRITY: re-restored after run: <paths>` in the summary plus a stderr
-warning: the tree is healed, but the run must be treated as suspect.
+warning, and — port of crap4dart 34e2163080 — the run FAILS (exit 2) with
+one violation line per re-restored file after the survivor lines
+(`<relative path>: working tree did not restore cleanly after the mutation
+run — the file was re-restored; treat the run as suspect and re-run`): the
+verdict fails when `score < min-score || survivors > max-survivors ||
+integrityViolations is non-empty`, so a perfect score can no longer pass a
+suspect run. The tree is healed, but the run must be re-run.
 
 `--test-args "test -run TestFoo ./pkg/..."` (default `test ./...` — the
 whole suite, matching upstream's `['test']`) is the full per-mutant test
@@ -993,7 +1006,9 @@ of `0` or less is a usage error.
 |      | `folder-structure`, `mutation`, `similarity --check`,                    |
 |      | `string-hazards --severity error`,                                       |
 |      | `identical-branches --severity error`,                                   |
-|      | `collapsible-flow --severity error`).                                    |
+|      | `collapsible-flow --severity error`,                                     |
+|      | `implicit-state --severity error`,                                       |
+|      | `mutation` with integrity violations).                                   |
 |      | (Also reported on stderr.)                                              |
 
 ## 27. `--run-tests`
@@ -1408,11 +1423,12 @@ name — `magic-constants`, not `magic_constants`):
   opt-in is the hard-coded `ignorableGates` registry. Unreadable or
   empty files are never suppressed.
 
-**Ignorable mapping.** The 14 line-anchored gates — `complexity`,
+**Ignorable mapping.** The line-anchored gates — `complexity`,
 `nesting`, `class-size`, `weight-of-class`, `unused-code`,
 `magic-constants`, `test-assertions`, `scattered-constants`,
 `duplicates`, `banned-imports`, `anon-struct-signatures`,
-`string-hazards`, `identical-branches`, `collapsible-flow` — honor line
+`string-hazards`, `identical-branches`, `collapsible-flow`,
+`implicit-state`, `method-size`, `public-docs` — honor line
 and file markers. `file-naming` and `unused-files` violations carry no
 line, so they respond to file markers only (their upstream
 counterparts are ignorable-capable the same way). Not ignorable, with
@@ -1850,3 +1866,144 @@ assertion guarding an operator test) and `profile.go`'s `copyModule` (a
 path guard guarding the skip test) — both fixed by merging the
 conditions in the same commit. The re-run reports `1781 if statements
 checked, no collapsible flow`.
+
+## 37. `implicit-state`
+
+```
+crap4go implicit-state [--severity warning|error] [--min-flags N]
+                    [--min-mutators N] [paths...]
+```
+
+Go adaptation of crap4dart 34e2163080's `implicit_state` gate:
+surfaces *implicit finite state machines* — lifecycle logic spread over
+boolean flag clusters, multi-mutator status fields and conditions that
+branch on flag combinations — with name-shape heuristics on parsed
+(unresolved) sources. All three make invalid states representable and
+transitions unauditable; the fix is an explicit model (enum +
+exhaustive switch). Four detections, one per `struct` type declaration
+top-level in a file (function-local struct types have no methods and
+can never violate — upstream's nested-class analog has no Go shape):
+
+1. **Scattered lifecycle flag** — a mutable bool field whose name
+   matches the lifecycle shape assigned from at least `--min-mutators`
+   distinct member funcs, flagged at the field's declaration line:
+   `lifecycle flag '<name>' is mutated from N places — part of an
+   implicit state machine`. The name shape is upstream's camelCase
+   regex as-is: an `is`/`has`/`was`/`will`/`should`/`can` prefix +
+   Capital (`isRunning`, `hasFailed`) or a lifecycle keyword suffix
+   (`Loaded`, `Started`, `Stopped`, `Disposed`, `Pending`, `Ready`,
+   `Done`, `Failed`, `Scheduled`, `Driving`, `Running`, `Closed`,
+   `Opened`, `Initialized`, `Connected`, `Completed`, `Submitted`,
+   `Finished`, `Canceled`, `Cancelled`, `Active`, `Busy`, `Alive`,
+   `Mounted`, `Broken`, `Dirty`, `Locked`, `Expired`, `Cached`).
+2. **Scattered status field** — a field named (lowercased, exact)
+   `status`, `state`, `phase`, `stage`, `mode` or `lifecycle`, of ANY
+   type, assigned from at least `--min-mutators` distinct member funcs:
+   `status field '<name>' is mutated from N places — implicit
+   transitions; centralize them`. A bool flag-shape match wins over the
+   status branch (upstream's else-if order).
+3. **Boolean-cluster FSM** — at least `--min-flags` (default 3)
+   matching mutable bool fields with at least one assignment site each,
+   where at least one of them is mutated from at least `--min-mutators`
+   distinct funcs, flagged at the struct line: `struct holds N lifecycle
+   flags mutated across methods — a boolean-cluster state machine; model
+   it with an enum/sealed state`.
+4. **Flag-combination condition** — an `if` condition reading two or
+   more DISTINCT declared lifecycle flags through the method's receiver
+   (`r.isLoading || r.hasFailed`), flagged at the `if` line: `condition
+   branches on N lifecycle flags (a, b) — an implicit state
+   combination; model the states explicitly`. Upstream counts bare
+   identifiers only (implicit-this reads; `x.isReady` on other objects
+   is excluded); the Go shape of an own-field read is the receiver
+   selection, so only `<receiverName>.<flag>` counts and selections
+   through other objects never do. Every `if` statement counts,
+   including else-if links (nested `if` in the else), like upstream's
+   `visitIfStatement`.
+
+Host mapping of the class analog: a struct type declaration plus its
+methods. Structs and funcs are collected across the whole selection
+first, then each struct is scanned against the package-wide func set —
+Go methods may live in any file of the package, so a struct declared in
+`a.go` with its mutating methods in `b.go` is one machine (upstream
+Dart keeps a class and its members in one file). Member scope — the
+funcs whose assignments and if-conditions
+are attributed to the struct — is methods whose receiver resolves to
+the struct (`T`, `*T`, generic `T[P]` included) plus plain funcs whose
+result resolves to `T`/`*T` (the `New*` factory, the constructor
+analog; upstream counts constructors as members). Mutation sites are
+assignment statements whose left side is a selector with a declared
+field's NAME, regardless of the target object — upstream counts the
+property-name shape on any target. Composite-literal field keys
+(`&T{isLoaded: true}`) are NOT assignments — upstream counts assignment
+expressions only, ported exactly. Go host N/A: upstream's
+implicit-this `SimpleIdentifier` assignment/read targets — a bare
+identifier in Go names a package var or a local, never a field, so
+bare-target assignments and bare-identifier conditions never count
+(and a package var shadowing a field name cannot fake a site). Go
+struct fields are always mutable — upstream's final/const exclusion
+has no host shape; package-level vars are excluded like upstream
+statics (a struct's fields are the only instance-field shape).
+Embedded fields carry no name and never match.
+
+Spec-vs-code divergence (upstream): upstream's `finish()` hardcodes
+`>= 2` for the cluster's scattered check while its spec §11.30 and the
+`min_mutators` knob say `min_mutators` — this port follows the spec
+and uses `--min-mutators` (the two agree at the defaults 3/2;
+`TestImplicitStateClusterFollowsMinMutatorsKnob` pins the knob).
+
+Config mapping (this port has no yaml file): `severity` →
+`--severity` (warning default — findings are name-shape heuristics on
+correct code; exit 0 with findings, `error` exits 2), `min_flags` →
+`--min-flags` (default 3, at least 1), `min_mutators` →
+`--min-mutators` (default 2, at least 1), `enabled: false` → subcommand
+only (the analyze flow never runs it), `ignorable: false` upstream
+default → the hard-coded `ignorableGates` registry (§32), findings
+ignorable via `// ignore:implicit-state` / `// ignore-file:implicit-state`
+and the blanket markers. Unknown keys are config errors upstream;
+unknown flags are usage errors here (Go's flag package, exit 1).
+
+Output: one line per finding — `<relative path>:<line>: <message>` —
+plus a summary (`N implicit-state findings (M structs checked)`, or
+`M structs checked, no implicit state machines`). Exit 0 on findings at
+the default warning severity, 2 with `--severity error`, 0 on a clean
+or empty selection, 1 on usage errors.
+
+Killing tests (implicitstate_test.go), all non-vacuous — every flagged
+fixture pins exact lines and messages, every clean fixture pins a
+specific negative ruling: `clusterSrc` (cluster + two scattered flags,
+struct/field line pinning), `twoFlagsSrc` (below min-flags: no cluster,
+per-field findings remain; `--min-flags 2` clusters), `oneFlagSrc`
+(three mutators, field line), `statusSrc` (string status field, two
+assigners), `onceSrc` (one site quiet at 2, flagged at
+`--min-mutators 1`), `comboSrc` (receiver two-flag condition, if-line
+pinning), `plainSrc` (other-object selections and single-flag
+conditions never combine), `packageVarsSrc` (package-level flag-shaped
+bools excluded like statics), `bareIdentSrc` (bare identifiers are
+package vars or locals, never field sites), `compositeSrc`
+(composite-literal keys are not assignments), `mutedSrc` (non-state
+bool fields mutated from two methods stay quiet), `cleanSrc`,
+`trioOnceSrc` (the min-mutators knob drives the cluster's scattered
+check — the divergence test), `factorySrc` (a factory returning `*T`
+counts as a mutator), `separateScanSrc` (two structs with the same
+field name scan independently), `splitStructSrc`/`splitMethodsSrc`
+(the struct and its mutating methods in different files — member
+resolution spans the selection; either half alone stays quiet), and
+the command-level
+`TestRun_ImplicitState*` (warning default exits 0 with findings,
+clean summary, `--severity error` exits 2, `--min-flags`/`--min-mutators`
+knobs at error severity, unknown flag exits 1, granular and blanket
+ignore markers silence findings even at `--severity error`).
+
+Dogfooding: `go run . implicit-state` with no path arguments over the
+port's own source — the default selection walks every non-test `.go`
+file in the repo, 103 structs (`testdata/sample.go`'s `Calc` included;
+function-local struct types are not collected, and the worktree carries
+none) — flagged one finding —
+`memory.go`'s `memoryStreamParser.hasPrev`, a bool mutated from two
+places: `attribute` advances the old-gen baseline latch, `flush` resets
+it per package. Both writes are deliberate, adjacent in purpose, and
+the fix-shaped alternatives (a `*float64` baseline or merging the
+reset) would complicate working code for the gate's sake — so the
+field carries a reason-carrying `// ignore:implicit-state` marker (the
+§32 quiet-down mechanism, same as the identical-branches residues).
+The re-run reports `103 structs checked, no implicit state machines`.

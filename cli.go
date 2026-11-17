@@ -107,6 +107,15 @@ Subcommands (must be the first argument):
                                    then, else-if chains after a terminal
                                    then; warning severity by default
                                    (exit 0), --severity error exits 2
+  crap4go implicit-state [--severity warning|error] [--min-flags N]
+                    [--min-mutators N] [paths...]
+                                   Flag implicit state machines: lifecycle
+                                   bool flag clusters mutated across
+                                   methods, status-like fields assigned
+                                   from many funcs, and if-conditions
+                                   branching on flag combinations;
+                                   warning severity by default (exit 0),
+                                   --severity error exits 2
   crap4go loc [--max-lines N] [--exclude GLOB]... [paths...]
                                    Flag files longer than N lines
                                    (default 800); exit 2 on violations
@@ -172,6 +181,7 @@ var subcommands = map[string]func([]string, string, io.Writer, io.Writer) int{
 	"method-size":            RunMethodSizeCommand,
 	"public-docs":            RunPublicDocsCommand,
 	"test-coverage":          RunTestCoverageCommand,
+	"implicit-state":         RunImplicitStateCommand,
 }
 
 // options holds the parsed, validated CLI configuration.

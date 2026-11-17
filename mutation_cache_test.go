@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -64,7 +65,7 @@ func runCachedEngine(t *testing.T, dir string, sites []MutationSite, refs map[Mu
 	t.Helper()
 	cacheFile := filepath.Join(dir, mutationCacheFileName)
 	result, err := runMutationEngine(dir, sites, 5*time.Second, defaultMutationTestArgs, nil, runner, &mutationCacheSession{
-		cache:       loadMutationCache(cacheFile, meta),
+		cache:       loadMutationCache(cacheFile, meta, nil),
 		cacheFile:   cacheFile,
 		siteMethods: refs,
 		liveKeys:    live,
@@ -189,33 +190,141 @@ func TestMutationCacheLoadRobustness(t *testing.T) {
 	meta := cacheTestMeta
 	cacheFile := filepath.Join(dir, mutationCacheFileName)
 
-	if got := loadMutationCache(cacheFile, meta); len(got.Methods) != 0 {
+	if got := loadMutationCache(cacheFile, meta, nil); len(got.Methods) != 0 {
 		t.Errorf("missing file: got %d methods, want a fresh cache", len(got.Methods))
 	}
 	if err := os.WriteFile(cacheFile, []byte("{not json"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadMutationCache(cacheFile, meta); len(got.Methods) != 0 {
+	if got := loadMutationCache(cacheFile, meta, nil); len(got.Methods) != 0 {
 		t.Errorf("corrupt file: got %d methods, want a fresh cache", len(got.Methods))
 	}
 	if err := os.WriteFile(cacheFile, []byte(`{"version":99,"meta":{},"methods":{"k":{"digest":"d"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadMutationCache(cacheFile, meta); len(got.Methods) != 0 {
+	if got := loadMutationCache(cacheFile, meta, nil); len(got.Methods) != 0 {
 		t.Errorf("version mismatch: got %d methods, want a fresh cache", len(got.Methods))
 	}
 	if err := os.WriteFile(cacheFile, []byte(`{"version":1,"meta":{"tool":"other","operators":"","test_args":""},"methods":{"k":{"digest":"d"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadMutationCache(cacheFile, meta); len(got.Methods) != 0 {
+	if got := loadMutationCache(cacheFile, meta, nil); len(got.Methods) != 0 {
 		t.Errorf("meta mismatch: got %d methods, want a fresh cache", len(got.Methods))
 	}
 	if err := os.WriteFile(cacheFile, []byte(`{"version":1,"meta":{"tool":"`+cacheTestMeta.Tool+`","operators":"`+cacheTestMeta.Operators+`","test_args":"`+cacheTestMeta.TestArgs+`"},"methods":{"k":{"digest":"d"}}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	got := loadMutationCache(cacheFile, meta)
+	got := loadMutationCache(cacheFile, meta, nil)
 	if len(got.Methods) != 1 || got.Methods["k"].Digest != "d" {
 		t.Errorf("matching meta: got %+v, want the stored method", got.Methods)
+	}
+}
+
+// TestMutationCacheDiscardReasons pins every discard reason: each broken
+// envelope degenerates into a fresh cache AND reports its reason through
+// onDiscard (a silent full re-run looks identical to a warm one); a
+// missing file is a cold start, not a discard.
+func TestMutationCacheDiscardReasons(t *testing.T) {
+	dir := t.TempDir()
+	meta := cacheTestMeta
+	cacheFile := filepath.Join(dir, mutationCacheFileName)
+	discards := func(t *testing.T, content string) ([]string, *mutationCache) {
+		t.Helper()
+		if err := os.WriteFile(cacheFile, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		var reasons []string
+		got := loadMutationCache(cacheFile, meta, func(message string) { reasons = append(reasons, message) })
+		return reasons, got
+	}
+	requireReason := func(t *testing.T, reasons []string, want string) {
+		t.Helper()
+		if len(reasons) != 1 || reasons[0] != "mutation cache discarded: "+want {
+			t.Errorf("reasons = %v, want exactly %q", reasons, want)
+		}
+	}
+
+	reasons, got := discards(t, "{not json")
+	if len(got.Methods) != 0 {
+		t.Errorf("corrupt file: got %d methods, want a fresh cache", len(got.Methods))
+	}
+	requireReason(t, reasons, "corrupt JSON")
+
+	for _, nonObject := range []string{`[1,2]`, `"stale"`, `42`, `null`} {
+		reasons, got = discards(t, nonObject)
+		if len(got.Methods) != 0 {
+			t.Errorf("non-object %s: got %d methods, want a fresh cache", nonObject, len(got.Methods))
+		}
+		requireReason(t, reasons, "not a JSON object")
+	}
+
+	reasons, got = discards(t, `{"version":99,"meta":{},"methods":{"k":{"digest":"d"}}}`)
+	if len(got.Methods) != 0 {
+		t.Errorf("version mismatch: got %d methods, want a fresh cache", len(got.Methods))
+	}
+	requireReason(t, reasons, fmt.Sprintf("version mismatch (expected %d)", mutationCacheVersion))
+
+	// A wrong-typed version is a version mismatch too (upstream compares
+	// the dynamically decoded value), never a decode failure.
+	reasons, got = discards(t, `{"version":"stale","meta":{}}`)
+	if len(got.Methods) != 0 {
+		t.Errorf("wrong-typed version: got %d methods, want a fresh cache", len(got.Methods))
+	}
+	requireReason(t, reasons, fmt.Sprintf("version mismatch (expected %d)", mutationCacheVersion))
+
+	reasons, got = discards(t, `{"version":1,"meta":{"tool":"other","operators":"","test_args":""},"methods":{"k":{"digest":"d"}}}`)
+	if len(got.Methods) != 0 {
+		t.Errorf("meta mismatch: got %d methods, want a fresh cache", len(got.Methods))
+	}
+	requireReason(t, reasons, "meta mismatch (operators or test args changed)")
+
+	// A wrong-typed value behind an acceptable envelope fails the typed
+	// decode: reported as corrupt JSON.
+	reasons, got = discards(t, `{"version":1,"meta":{"tool":"`+cacheTestMeta.Tool+`","operators":"`+cacheTestMeta.Operators+`","test_args":"`+cacheTestMeta.TestArgs+`"},"methods":42}`)
+	if len(got.Methods) != 0 {
+		t.Errorf("wrong-typed methods: got %d methods, want a fresh cache", len(got.Methods))
+	}
+	requireReason(t, reasons, "corrupt JSON")
+
+	// A valid envelope without a methods key loads as an empty usable
+	// cache and reports no discard.
+	reasons, got = discards(t, `{"version":1,"meta":{"tool":"`+cacheTestMeta.Tool+`","operators":"`+cacheTestMeta.Operators+`","test_args":"`+cacheTestMeta.TestArgs+`"}}`)
+	if len(got.Methods) != 0 || got.Version != mutationCacheVersion {
+		t.Errorf("envelope without methods: got %+v, want an empty initialized cache", got)
+	}
+	if len(reasons) != 0 {
+		t.Errorf("valid envelope reported discards: %v", reasons)
+	}
+
+	if err := os.Remove(cacheFile); err != nil {
+		t.Fatal(err)
+	}
+	var reasons2 []string
+	got = loadMutationCache(cacheFile, meta, func(message string) { reasons2 = append(reasons2, message) })
+	if len(got.Methods) != 0 || len(reasons2) != 0 {
+		t.Errorf("missing file: %d methods, reasons %v — want a silent fresh cache", len(got.Methods), reasons2)
+	}
+}
+
+// TestMutationCacheDiscardWiredToStderr pins the gate-run wiring: the
+// onDiscard callback prefixes the tool name and lands on stderr.
+func TestMutationCacheDiscardWiredToStderr(t *testing.T) {
+	dir := t.TempDir()
+	cacheFile := filepath.Join(dir, mutationCacheFileName)
+	if err := os.WriteFile(cacheFile, []byte("{not json"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	var errOut bytes.Buffer
+	session := openMutationCache(dir, mutationOptions{cache: true}, mutationScan{}, mutationAllCategories(), &errOut)
+	if session == nil {
+		t.Fatal("openMutationCache returned nil with --cache")
+	}
+	if want := "crap4go mutation: mutation cache discarded: corrupt JSON"; !strings.Contains(errOut.String(), want) {
+		t.Errorf("stderr missing %q:\n%s", want, errOut.String())
+	}
+	// Without --cache no session is opened at all.
+	if session := openMutationCache(dir, mutationOptions{}, mutationScan{}, mutationAllCategories(), &errOut); session != nil {
+		t.Error("openMutationCache returned a session without --cache")
 	}
 }
 
@@ -242,7 +351,7 @@ func TestMutationCachePrunesVanishedMethods(t *testing.T) {
 	runCachedEngine(t, dir, append(append([]MutationSite{}, sitesA...), sitesB...), allRefs, allLive,
 		func(string, time.Duration, []string) (mutantOutcome, error) { return mutantKilled, nil }, cacheTestMeta)
 	cacheFile := filepath.Join(dir, mutationCacheFileName)
-	if got := loadMutationCache(cacheFile, cacheTestMeta); len(got.Methods) != 3 {
+	if got := loadMutationCache(cacheFile, cacheTestMeta, nil); len(got.Methods) != 3 {
 		t.Fatalf("got %d cached methods, want 3: %v", len(got.Methods), got.Methods)
 	}
 
@@ -258,7 +367,7 @@ func TestMutationCachePrunesVanishedMethods(t *testing.T) {
 	if calls != 0 {
 		t.Errorf("pruning run re-executed %d mutants, want 0", calls)
 	}
-	got := loadMutationCache(cacheFile, cacheTestMeta)
+	got := loadMutationCache(cacheFile, cacheTestMeta, nil)
 	if len(got.Methods) != 2 || got.Methods["a.go#Add"].Digest == "" || got.Methods["a.go#Zero"].Digest == "" {
 		t.Errorf("pruned methods %v, want only a.go#Add and a.go#Zero", got.Methods)
 	}

@@ -208,20 +208,48 @@ func (c *mutationCache) save(path string) error {
 	return os.WriteFile(path, append(data, '\n'), writableFilePerm)
 }
 
+// decodeMutationEnvelope checks the raw JSON envelope: the data must
+// decode to an object carrying the expected cache version. reason is
+// empty when the envelope is acceptable. Like upstream
+// (`decoded['version'] != version`), any version value other than the
+// expected one — missing, wrong type included — is a version mismatch:
+// the check runs on the dynamically decoded value BEFORE the typed
+// decode, so a wrong-typed version reports version mismatch, never a
+// decode failure.
+func decodeMutationEnvelope(data []byte) (reason string, ok bool) {
+	var probe any
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return "corrupt JSON", false
+	}
+	obj, ok := probe.(map[string]any)
+	if !ok {
+		return "not a JSON object", false
+	}
+	if version, ok := obj["version"].(float64); !ok || version != float64(mutationCacheVersion) {
+		return fmt.Sprintf("version mismatch (expected %d)", mutationCacheVersion), false
+	}
+	return "", true
+}
+
 // loadMutationCache loads the cache at path under meta. A missing, corrupt,
 // outdated or meta-mismatched file yields a fresh cache — a full
-// re-execution under the current semantics.
-func loadMutationCache(path string, meta mutationCacheMeta) *mutationCache {
+// re-execution under the current semantics. When onDiscard is set, every
+// discard reports its reason (a silent full re-run looks identical to a
+// warm one and hides config drift).
+func loadMutationCache(path string, meta mutationCacheMeta, onDiscard func(string)) *mutationCache {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return freshMutationCache(meta)
 	}
+	if reason, ok := decodeMutationEnvelope(data); !ok {
+		return discardMutationCache(meta, onDiscard, reason)
+	}
 	var decoded mutationCache
 	if err := json.Unmarshal(data, &decoded); err != nil {
-		return freshMutationCache(meta)
+		return discardMutationCache(meta, onDiscard, "corrupt JSON")
 	}
-	if decoded.Version != mutationCacheVersion || !decoded.Meta.matches(meta) {
-		return freshMutationCache(meta)
+	if !decoded.Meta.matches(meta) {
+		return discardMutationCache(meta, onDiscard, "meta mismatch (operators or test args changed)")
 	}
 	if decoded.Methods == nil {
 		decoded.Methods = map[string]cachedMutationMethod{}
@@ -229,6 +257,15 @@ func loadMutationCache(path string, meta mutationCacheMeta) *mutationCache {
 	decoded.Version = mutationCacheVersion
 	decoded.Meta = meta
 	return &decoded
+}
+
+// discardMutationCache returns a fresh cache plus, when onDiscard is set,
+// a one-line reason why the previous cache was thrown away.
+func discardMutationCache(meta mutationCacheMeta, onDiscard func(string), reason string) *mutationCache {
+	if onDiscard != nil {
+		onDiscard("mutation cache discarded: " + reason)
+	}
+	return freshMutationCache(meta)
 }
 
 // ref returns the cache identity bound to site; ok=false when the site has
