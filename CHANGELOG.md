@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v1.1.1...v1.2.0) (2026-11-17)
+
+
+### Features
+
+* implicit-state gate + mutation verdict/cache fixes ([#72](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/72)) ([0f1ae29](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/0f1ae2904ac331dcd771ca2a32c65c438988a2bc))
+
 ## [1.1.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v1.1.0...v1.1.1) (2026-11-14)
 
 
