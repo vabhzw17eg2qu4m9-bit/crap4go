@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.2.1](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v1.2.0...v1.2.1) (2026-11-17)
+
+
+### Bug Fixes
+
+* **test:** sort similarity corpus by path to honor scan-order invariant ([#74](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/issues/74)) ([89390b5](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/commit/89390b52410d83fb01bcb50e39771aac2252fcbf))
+
 ## [1.2.0](https://github.com/vabhzw17eg2qu4m9-bit/crap4go/compare/v1.1.1...v1.2.0) (2026-11-17)
 
 
