@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"go/parser"
@@ -670,5 +671,56 @@ func TestMutationGateDisabledByDefault(t *testing.T) {
 	}
 	if string(before) != string(after) {
 		t.Error("analyze flow mutated the source")
+	}
+}
+
+// TestMutationVerdictIntegrityFailsPerfectScore is the killing test for
+// the verdict-integrity fix (upstream 34e2163080): a perfect score with
+// a non-empty integrityViolations list must FAIL — the outcome of a run
+// that left a mutant behind cannot be trusted — while the same perfect
+// result on a clean tree passes.
+func TestMutationVerdictIntegrityFailsPerfectScore(t *testing.T) {
+	dir := t.TempDir()
+	file := filepath.Join(dir, "calc.go")
+	if err := os.WriteFile(file, []byte(cacheSrcA), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	perfect := mutationRunResult{
+		outcomes: []mutationSiteOutcome{
+			{site: MutationSite{File: file, Line: 3, Category: "arithmetic", Original: "+", Mutant: "-"}, outcome: mutantKilled},
+			{site: MutationSite{File: file, Line: 7, Category: "constant", Original: "0", Mutant: "1"}, outcome: mutantKilled},
+		},
+	}
+	opts := mutationOptions{minScore: 1, maxSurvivors: 0}
+	var out, errOut bytes.Buffer
+	if code := mutationVerdict(perfect, 0, opts, dir, &out, &errOut); code != 0 {
+		t.Fatalf("exit %d, want 0: a perfect score on a clean tree passes\nstdout:\n%s", code, out.String())
+	}
+
+	perfect.integrityViolations = []string{file}
+	out.Reset()
+	errOut.Reset()
+	if code := mutationVerdict(perfect, 0, opts, dir, &out, &errOut); code != 2 {
+		t.Fatalf("exit %d, want 2: a perfect score must not pass a suspect run\nstdout:\n%s", code, out.String())
+	}
+	want := "calc.go: working tree did not restore cleanly after the mutation run — the file was re-restored; treat the run as suspect and re-run"
+	if !strings.Contains(out.String(), want) {
+		t.Errorf("integrity violation line missing:\n%s", out.String())
+	}
+	// The integrity line rides after any survivor lines.
+	result := perfect
+	result.outcomes = append(result.outcomes, mutationSiteOutcome{
+		site:    MutationSite{File: file, Line: 3, Category: "logical", Original: "<", Mutant: ">="},
+		outcome: mutantSurvived,
+	})
+	out.Reset()
+	if code := mutationVerdict(result, 0, opts, dir, &out, &errOut); code != 2 {
+		t.Fatalf("exit %d, want 2", code)
+	}
+	stdout := out.String()
+	survivor := strings.Index(stdout, "survived logical mutant")
+	integrity := strings.Index(stdout, "calc.go: working tree did not restore cleanly")
+	if survivor < 0 || integrity < survivor {
+		t.Errorf("integrity violations must ride after survivor lines:\n%s", stdout)
 	}
 }

@@ -73,7 +73,7 @@ releases printed a warning and reported every method as `N/A`.
 (`file-naming`,
 `nesting`, `complexity`, `class-size`, `weight-of-class`, `unused-code`,
 `unused-files`, `banned-imports`, `magic-constants`, `test-assertions`,
-`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`, `identical-branches`, `collapsible-flow`, `loc`, `method-size`, `public-docs`, `test-coverage`) dispatch on the first
+`folder-structure`, `anon-struct-signatures`, `scattered-constants`, `duplicates`, `similarity`, `string-hazards`, `identical-branches`, `collapsible-flow`, `implicit-state`, `loc`, `method-size`, `public-docs`, `test-coverage`) dispatch on the first
 argument only; anything else takes the analyze path above.
 
 ```sh
@@ -104,6 +104,8 @@ crap4go identical-branches         # flag duplicate conditions/bodies/chain-oper
 crap4go identical-branches --severity error   # same findings, exit 2
 crap4go collapsible-flow           # flag collapsible nesting: mergeable `if a { if b {} }`, redundant else, terminal-then chains (warning severity, exit 0)
 crap4go collapsible-flow --severity error   # same findings, exit 2
+crap4go implicit-state             # flag implicit state machines: flag clusters, scattered mutators, flag-combination conditions (warning severity, exit 0)
+crap4go implicit-state --severity error   # same findings, exit 2
 crap4go loc                        # flag files longer than 800 lines
 crap4go loc --max-lines 500 --exclude 'testdata/**'   # tighter limit, generated data skipped
 crap4go method-size                # flag functions over 60 lines or 6 params (New* constructors: params only)
@@ -336,6 +338,25 @@ code — the gate trades flatness, not bugs — so it is warning-default
 like string-hazards: `--severity error` exits 2, and findings are
 ignorable via `// ignore:collapsible-flow` / the blanket markers.
 
+`implicit-state` (from crap4dart 34e2163080's `implicit_state`) surfaces
+*implicit finite state machines*: a cluster of `--min-flags` (default 3)
+lifecycle-shaped mutable bool fields (`isRunning`, `hasFailed`, or a
+`Loaded`/`Ready`/`Failed`-style suffix) mutated across methods is a
+boolean-cluster state machine with unmodelled combination states; a
+lifecycle flag or a `status`-like field (`status`, `state`, `phase`,
+`stage`, `mode`, `lifecycle`) assigned from `--min-mutators` (default 2)
+distinct funcs scatters its transitions; and an `if` reading two or more
+declared flags through the method's receiver branches on an implicit
+combination. The Go class analog is a struct plus its methods; factory
+funcs returning the struct count as the constructor analog, package
+vars are excluded like upstream statics, and composite-literal field
+keys are not assignments (upstream counts assignment expressions only).
+Name-shape heuristic on parsed sources — it cannot prove reachability
+or races, it marks candidates for an explicit enum/sealed-state
+refactor. Warning severity by default (`--severity error` exits 2);
+findings are ignorable via `// ignore:implicit-state` / the blanket
+markers.
+
 `loc` (from crap4dart's `loc`) fails files longer than `--max-lines`
 (default 800) — long files accrete unrelated concerns; split them.
 `--exclude GLOB` (repeatable, shared glob rules) drops files from the
@@ -455,9 +476,12 @@ regex. Sites in unexecuted methods are `uncovered` and excluded from the
 score; every covered site is mutated one at a time and `go test ./...`
 re-runs per mutant (non-zero exit kills the mutant — compile errors
 included; a timeout counts as survived), with the file restored after
-each mutant. It fails below `--min-score` (default 0.8) or above
-`--max-survivors` (default 0), printing one violation line per surviving
-mutant; skips (exit 0) without coverage data or test files. Expensive by
+each mutant. It fails below `--min-score` (default 0.8), above
+`--max-survivors` (default 0), or when the end-of-run integrity check had
+to re-restore files — a suspect run can no longer pass on a perfect
+outcome table; one violation line per re-restored file rides after the
+survivor lines. Skips (exit 0) without coverage data or test files.
+Expensive by
 nature (one full test run per mutant) it is opt-in only — the analyze
 flow never runs it — with `--timeout-seconds` (60), `--max-mutants` (500)
 and `--operators` capping the work.
@@ -469,12 +493,17 @@ methods whose exact source span (FNV-1a digest) is unchanged since the
 last run are replayed, not re-executed, and reported as `cached` in the
 summary; survivors always re-run (the suite may have improved); coverage
 gating is re-derived from fresh coverage every run; a config change
-(operators, `--test-args`, tool version) wipes the cache; entries of
+(operators, `--test-args`, tool version) wipes the cache — with the
+reason (corrupt JSON, not a JSON object, version mismatch, meta
+mismatch) reported to stderr as `crap4go mutation: mutation cache
+discarded: <reason>` so a silent full re-run cannot masquerade as a
+warm one; entries of
 vanished methods are pruned. The end-of-run integrity check
 (crap4dart 8b2e8e8) snapshots every file before the loop and re-verifies
 the tree after it — a file that drifted (external edit, killed process
 between apply and restore) is re-restored and surfaced as `INTEGRITY` in
-the summary plus a stderr warning: treat that run as suspect.
+the summary plus a stderr warning, and the run FAILS with one violation
+line per re-restored file: treat that run as suspect and re-run.
 `--test-args "test -run TestFoo ./pkg/..."` scopes the per-mutant
 invocation (default `test ./...` — the whole suite); scoping is your
 responsibility: a mutant is killed only if the scoped suite would kill
@@ -627,13 +656,13 @@ unknown id.
 
 Suppression is opt-in per gate. crap4go has no config file, so the
 opt-in is the hard-coded registry in `ignorefilter.go` (the host
-adaptation of upstream's `ignorable: true` config flag): the 19
-ignorable gates — the 16 whose violations carry `file:line` —
+adaptation of upstream's `ignorable: true` config flag): the 20
+ignorable gates — the 17 whose violations carry `file:line` —
 `complexity`, `nesting`,
 `class-size`, `weight-of-class`, `unused-code`, `magic-constants`,
 `test-assertions`, `scattered-constants`, `duplicates`,
 `banned-imports`, `anon-struct-signatures`, `string-hazards`,
-`identical-branches`, `collapsible-flow`, `method-size`,
+`identical-branches`, `collapsible-flow`, `implicit-state`, `method-size`,
 `public-docs` — honor
 line and file markers; `file-naming`, `unused-files`, and `loc`
 (line-less violations) honor

@@ -165,7 +165,7 @@ func TestMutationEngineScopedKillCachesAsRegularKill(t *testing.T) {
 	writeCacheFixture(t, root, "a.go", cacheSrcB)
 	sites, refs, live := cacheFixtureScan(t, root, "a.go", cacheSrcB)
 	cacheFile := filepath.Join(root, mutationCacheFileName)
-	session := &mutationCacheSession{cache: loadMutationCache(cacheFile, cacheTestMeta), cacheFile: cacheFile, siteMethods: refs, liveKeys: live}
+	session := &mutationCacheSession{cache: loadMutationCache(cacheFile, cacheTestMeta, nil), cacheFile: cacheFile, siteMethods: refs, liveKeys: live}
 	scoped := []string{"test", "./scoped"}
 	first, err := runMutationEngine(root, sites, 5*time.Second, defaultMutationTestArgs,
 		func(MutationSite) []string { return scoped },
@@ -184,7 +184,7 @@ func TestMutationEngineScopedKillCachesAsRegularKill(t *testing.T) {
 			calls++
 			return mutantKilled, nil
 		},
-		&mutationCacheSession{cache: loadMutationCache(cacheFile, cacheTestMeta), cacheFile: cacheFile, siteMethods: refs, liveKeys: live})
+		&mutationCacheSession{cache: loadMutationCache(cacheFile, cacheTestMeta, nil), cacheFile: cacheFile, siteMethods: refs, liveKeys: live})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -201,7 +201,7 @@ func TestMutationEngineScopedSurvivorCachesConfirmedOutcome(t *testing.T) {
 	writeCacheFixture(t, root, "a.go", cacheSrcB)
 	sites, refs, live := cacheFixtureScan(t, root, "a.go", cacheSrcB)
 	cacheFile := filepath.Join(root, mutationCacheFileName)
-	session := &mutationCacheSession{cache: loadMutationCache(cacheFile, cacheTestMeta), cacheFile: cacheFile, siteMethods: refs, liveKeys: live}
+	session := &mutationCacheSession{cache: loadMutationCache(cacheFile, cacheTestMeta, nil), cacheFile: cacheFile, siteMethods: refs, liveKeys: live}
 	first, err := runMutationEngine(root, sites, 5*time.Second, []string{"test", "./full"},
 		func(MutationSite) []string { return []string{"test", "./scoped"} },
 		func(_ string, _ time.Duration, args []string) (mutantOutcome, error) {
@@ -224,7 +224,7 @@ func TestMutationEngineScopedSurvivorCachesConfirmedOutcome(t *testing.T) {
 			calls++
 			return mutantKilled, nil
 		},
-		&mutationCacheSession{cache: loadMutationCache(cacheFile, cacheTestMeta), cacheFile: cacheFile, siteMethods: refs, liveKeys: live})
+		&mutationCacheSession{cache: loadMutationCache(cacheFile, cacheTestMeta, nil), cacheFile: cacheFile, siteMethods: refs, liveKeys: live})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -761,11 +761,15 @@ func mutantTestRunnerOS(projectRoot string, timeout time.Duration, testArgs []st
 // mutant's run to the derived test file(s) of the mutated file (scoped
 // survivors are re-confirmed against the full invocation). Killed mutants
 // of methods whose source span is unchanged replay from the digest cache
-// (.crap-mutation-cache.json); survivors always re-execute. A non-zero exit
+// (.crap-mutation-cache.json); survivors always re-execute, and cache
+// discard reasons (corrupt JSON, non-object, version or meta mismatch)
+// are reported to stderr. A non-zero exit
 // kills the mutant (compile errors included), a timeout counts as survived.
-// Exit code 2 when the score is below --min-score or more than
-// --max-survivors mutants survive; one violation line is printed per
-// surviving mutant. Skips (exit 0) when there is no coverage data, no test
+// Exit code 2 when the score is below --min-score, more than
+// --max-survivors mutants survive, or the end-of-run integrity check had
+// to re-restore files (one violation line per re-restored file rides
+// after the survivor lines); a suspect run can no longer pass on a
+// perfect outcome table. Skips (exit 0) when there is no coverage data, no test
 // files, or `go` is unavailable.
 func RunMutationCommand(args []string, root string, stdout, stderr io.Writer) int {
 	opts, code, ok := parseMutationFlags(args, stderr)
@@ -855,7 +859,7 @@ func runMutationGate(opts mutationOptions, root string, stdout, stderr io.Writer
 		printNoSites(scan.uncovered, stdout)
 		return 0
 	}
-	result, err := runMutationEngineFor(root, opts, scan, categories)
+	result, err := runMutationEngineFor(root, opts, scan, categories, stderr)
 	if err != nil {
 		return mutationEngineError(err, stdout, stderr)
 	}
@@ -874,7 +878,7 @@ func mutationDiffFor(opts mutationOptions, root string) (map[string]map[int]bool
 // runMutationEngineFor wires the gate's engine invocation: the OS test
 // runner carrying the resolved per-site invocation arguments, optional
 // test scoping and the digest cache.
-func runMutationEngineFor(root string, opts mutationOptions, scan mutationScan, categories map[string]bool) (mutationRunResult, error) {
+func runMutationEngineFor(root string, opts mutationOptions, scan mutationScan, categories map[string]bool, stderr io.Writer) (mutationRunResult, error) {
 	timeout := time.Duration(opts.timeoutSeconds) * time.Second
 	runner := func(projectRoot string, runTimeout time.Duration, testArgs []string) (mutantOutcome, error) {
 		return mutantTestRunnerOS(projectRoot, runTimeout, testArgs)
@@ -885,13 +889,13 @@ func runMutationEngineFor(root string, opts mutationOptions, scan mutationScan, 
 			return mutationScopedTestArgs(root, site.File)
 		}
 	}
-	return runMutationEngine(root, scan.sites, timeout, opts.testArgs, testArgsFor, runner, openMutationCache(root, opts, scan, categories))
+	return runMutationEngine(root, scan.sites, timeout, opts.testArgs, testArgsFor, runner, openMutationCache(root, opts, scan, categories, stderr))
 }
 
 // openMutationCache opens the digest cache when enabled: it loads the file
-// at the project root (a fresh empty cache on any mismatch) and binds it to
-// the scan's site identities.
-func openMutationCache(root string, opts mutationOptions, scan mutationScan, categories map[string]bool) *mutationCacheSession {
+// at the project root (a fresh empty cache on any mismatch, the discard
+// reason reported to stderr) and binds it to the scan's site identities.
+func openMutationCache(root string, opts mutationOptions, scan mutationScan, categories map[string]bool, stderr io.Writer) *mutationCacheSession {
 	if !opts.cache {
 		return nil
 	}
@@ -900,7 +904,9 @@ func openMutationCache(root string, opts mutationOptions, scan mutationScan, cat
 	// is monotone (the scoped invocation is a subset of the full suite), so
 	// cached kills stay valid no matter how the invocation was scoped.
 	return &mutationCacheSession{
-		cache:       loadMutationCache(cacheFile, currentMutationCacheMeta(categories, opts.testArgs)),
+		cache: loadMutationCache(cacheFile, currentMutationCacheMeta(categories, opts.testArgs), func(message string) {
+			fmt.Fprintf(stderr, "crap4go mutation: %s\n", message)
+		}),
 		cacheFile:   cacheFile,
 		siteMethods: scan.siteMethods,
 		liveKeys:    scan.liveKeys,
@@ -1202,7 +1208,7 @@ func mutationVerdict(result mutationRunResult, uncovered int, opts mutationOptio
 		summary += fmt.Sprintf("; test-scoped %d (%d re-confirmed killed)", result.scopedCount, result.confirmedCount)
 	}
 	summary += integritySuffix(result, root, stderr)
-	if score >= opts.minScore && result.survivedCount() <= opts.maxSurvivors {
+	if score >= opts.minScore && result.survivedCount() <= opts.maxSurvivors && len(result.integrityViolations) == 0 {
 		fmt.Fprintln(stdout, summary)
 		return 0
 	}
@@ -1212,6 +1218,13 @@ func mutationVerdict(result mutationRunResult, uncovered int, opts mutationOptio
 				relPath(root, o.site.File), o.site.Line, o.site.Category,
 				o.site.Original, o.site.Mutant, mutationMethodSuffix(o.site.Method))
 		}
+	}
+	// Integrity violations ride after the survivor violations: the tree
+	// was healed, but the outcome of a run that left a mutant behind
+	// cannot be trusted — a perfect score no longer passes a suspect run.
+	for _, path := range result.integrityViolations {
+		fmt.Fprintf(stdout, violationTextFormat, relPath(root, path),
+			"working tree did not restore cleanly after the mutation run — the file was re-restored; treat the run as suspect and re-run")
 	}
 	fmt.Fprintf(stdout, "%s; survivors by category: %s\n", summary, mutationCategorySummary(result.survivorsByCategory()))
 	return 2
